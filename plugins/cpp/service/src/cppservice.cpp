@@ -2,6 +2,7 @@
 #include <queue>
 
 #include <util/util.h>
+#include <util/logutil.h>
 
 #include <model/cppfunction.h>
 #include <model/cppfunction-odb.hxx>
@@ -17,10 +18,15 @@
 #include <model/cppfriendship-odb.hxx>
 #include <model/cppenum.h>
 #include <model/cppenum-odb.hxx>
+#include <model/cppmacroexpansion.h>
+#include <model/cppmacroexpansion-odb.hxx>
+#include <model/cppdoccomment.h>
+#include <model/cppdoccomment-odb.hxx>
 
 #include <service/cppservice.h>
 
 #include "diagram.h"
+#include "filediagram.h"
 
 namespace
 {
@@ -46,6 +52,12 @@ namespace
   typedef odb::result<cc::model::CppEnum> EnumResult;
   typedef odb::query<cc::model::CppEnumConstant> EnumConstQuery;
   typedef odb::result<cc::model::CppEnumConstant> EnumConstResult;
+  typedef odb::query<cc::model::CppMacroExpansion> MacroExpansionQuery;
+  typedef odb::result<cc::model::CppMacroExpansion> MacroExpansionResult;
+  typedef odb::query<cc::model::File> FileQuery;
+  typedef odb::result<cc::model::File> FileResult;
+  typedef odb::query<cc::model::CppDocComment> DocCommentQuery;
+  typedef odb::result<cc::model::CppDocComment> DocCommentResult;
 
   /**
    * This struct transforms a model::CppAstNode to an AstNodeInfo Thrift
@@ -55,12 +67,13 @@ namespace
   {
     typedef std::map<cc::model::CppAstNodeId, std::vector<std::string>> TagMap;
 
-    CreateAstNodeInfo(
-      std::shared_ptr<odb::database> db_,
-      const TagMap& tags_ = {}) : _db(db_), _tags(tags_)
+    CreateAstNodeInfo(const TagMap& tags_ = {}) : _tags(tags_)
     {
     }
 
+    /**
+     * Returns the Thrift object for this C++ AST node.
+     */
     cc::service::language::AstNodeInfo operator()(
       const cc::model::CppAstNode& astNode_)
     {
@@ -78,18 +91,7 @@ namespace
       ret.range.range.endpos.column = astNode_.location.range.end.column;
 
       if (astNode_.location.file)
-      {
         ret.range.file = std::to_string(astNode_.location.file.object_id());
-
-        (cc::util::OdbTransaction(_db))([&ret, &astNode_](){
-          ret.__set_srcText(cc::util::textRange(
-            astNode_.location.file.load()->content.load()->content,
-            astNode_.location.range.start.line,
-            astNode_.location.range.start.column,
-            astNode_.location.range.end.line,
-            astNode_.location.range.end.column));
-        });
-      }
 
       TagMap::const_iterator it = _tags.find(astNode_.id);
       if (it != _tags.end())
@@ -127,14 +129,91 @@ void CppServiceHandler::getAstNodeInfo(
   AstNodeInfo& return_,
   const core::AstNodeId& astNodeId_)
 {
-  return_ = CreateAstNodeInfo(_db)(queryCppAstNode(astNodeId_));
+  return_ = _transaction([this, &astNodeId_](){
+    return CreateAstNodeInfo()(queryCppAstNode(astNodeId_));
+  });
+}
+
+void CppServiceHandler::getSourceText(
+  std::string& return_,
+  const core::AstNodeId& astNodeId_)
+{
+  return_ = _transaction([this, &astNodeId_](){
+    model::CppAstNode astNode = queryCppAstNode(astNodeId_);
+
+    if (astNode.location.file)
+      return cc::util::textRange(
+        astNode.location.file.load()->content.load()->content,
+        astNode.location.range.start.line,
+        astNode.location.range.start.column,
+        astNode.location.range.end.line,
+        astNode.location.range.end.column);
+
+    return std::string();
+  });
 }
 
 void CppServiceHandler::getDocumentation(
     std::string& return_,
     const core::AstNodeId& astNodeId_)
 {
-  // TODO
+  _transaction([&, this](){
+    model::CppAstNode node = queryCppAstNode(astNodeId_);
+
+    DocCommentResult docComment = _db->query<model::CppDocComment>(
+      DocCommentQuery::mangledNameHash == node.mangledNameHash);
+
+    if (!docComment.empty())
+      return_ = "<div class=\"main-doc\">" + docComment.begin()->contentHTML
+        + "</div>";
+
+    switch (node.symbolType)
+    {
+      case model::CppAstNode::SymbolType::Type:
+      {
+        //--- Data members ---//
+
+        std::vector<AstNodeInfo> methods;
+        getReferences(methods, astNodeId_, METHOD, {});
+
+        for (const AstNodeInfo& method : methods)
+        {
+          std::map<std::string, std::string> properties;
+          getProperties(properties, method.id);
+
+          return_ += "<div class=\"group\"><div class=\"signature\">";
+
+          //--- Add tags ---/
+
+          for (const std::string& tag : method.tags)
+            if (tag == "public" || tag == "private" || tag == "protected")
+              return_ += "<span class=\"icon-visibility icon-" + tag
+                      +  "\"></span>";
+            else
+              return_ += "<span class=\"tag tag-" + tag +"\" title=\""
+                      +  tag + "\">" + (char)std::toupper(tag[0]) + "</span>";
+
+          auto signature = properties.find("Signature");
+          return_
+            += signature == properties.end()
+            ?  method.astNodeValue
+            :  signature->second;
+
+          return_ += "</div>";
+
+          //--- Query documentation of members ---//
+
+          DocCommentResult doc = _db->query<model::CppDocComment>(
+            DocCommentQuery::mangledNameHash == method.mangledNameHash);
+
+          if (!doc.empty())
+            return_ += doc.begin()->contentHTML;
+
+          return_ += "</div>";
+        }
+      }
+    }
+  });
 }
 
 void CppServiceHandler::getAstNodeInfoByPosition(
@@ -177,7 +256,9 @@ void CppServiceHandler::getAstNodeInfoByPosition(
       }
     }
 
-    return_ = CreateAstNodeInfo(_db, getTags({min}))(min);
+    return_ = _transaction([this, &min](){
+      return CreateAstNodeInfo(getTags({min}))(min);
+    });
   });
 }
 
@@ -260,6 +341,195 @@ void CppServiceHandler::getProperties(
   });
 }
 
+std::int32_t CppServiceHandler::getReferenceCount(
+  const core::AstNodeId& astNodeId_,
+  const std::int32_t referenceId_)
+{
+  model::CppAstNode node = queryCppAstNode(astNodeId_);
+
+  return _transaction([&, this]() -> std::int32_t {
+    switch (referenceId_)
+    {
+      case DEFINITION:
+        return queryCppAstNodeCount(astNodeId_,
+          AstQuery::astType == model::CppAstNode::AstType::Definition);
+
+      case DECLARATION:
+        return queryCppAstNodeCount(astNodeId_,
+          AstQuery::astType == model::CppAstNode::AstType::Declaration &&
+          AstQuery::visibleInSourceCode == true);
+
+      case USAGE:
+        return queryCppAstNodeCount(astNodeId_);
+
+      case THIS_CALLS:
+        return queryCallsCount(astNodeId_);
+
+      case CALLS_OF_THIS:
+        return queryCppAstNodeCount(astNodeId_,
+          AstQuery::astType == model::CppAstNode::AstType::Usage);
+
+      case CALLEE:
+      {
+        std::int32_t count = 0;
+
+        std::set<std::uint64_t> defHashes;
+        for (const model::CppAstNode& call : queryCalls(astNodeId_))
+        {
+          model::CppAstNode node = queryCppAstNode(std::to_string(call.id));
+          defHashes.insert(node.mangledNameHash);
+        }
+
+        if (!defHashes.empty())
+          count += _db->query_value<model::CppAstCount>(
+            AstQuery::mangledNameHash.in_range(
+              defHashes.begin(), defHashes.end()) &&
+            AstQuery::astType == model::CppAstNode::AstType::Definition &&
+            AstQuery::location.range.end.line != model::Position::npos).count;
+
+        return count;
+      }
+
+      case CALLER:
+      {
+        std::vector<AstNodeInfo> references;
+        getReferences(references, astNodeId_, CALLER, {});
+        return references.size();
+      }
+
+      case VIRTUAL_CALL:
+      {
+        std::int32_t count = queryCppAstNodeCount(astNodeId_,
+          AstQuery::astType == model::CppAstNode::AstType::VirtualCall);
+
+        for (const model::CppAstNode& node : queryOverrides(astNodeId_, true))
+          count += queryCppAstNodeCount(std::to_string(node.id),
+            AstQuery::astType == model::CppAstNode::AstType::VirtualCall);
+
+        return count;
+      }
+
+      case FUNC_PTR_CALL:
+      {
+        std::int32_t count = 0;
+
+        std::unordered_set<std::uint64_t> fptrCallers
+          = transitiveClosureOfRel(
+              model::CppRelation::Kind::Assign,
+              node.mangledNameHash,
+              true);
+
+        for (std::uint64_t mangledNameHash : fptrCallers)
+        {
+          AstResult result = _db->query<model::CppAstNode>(
+            AstQuery::mangledNameHash == mangledNameHash &&
+            AstQuery::astType == model::CppAstNode::AstType::Usage);
+          count += result.size();
+        }
+
+        return count;
+      }
+
+      case PARAMETER:
+        return _db->query_value<model::CppFunctionParamCount>(
+          FuncQuery::astNodeId == node.id).count;
+
+      case LOCAL_VAR:
+        return _db->query_value<model::CppFunctionLocalCount>(
+          FuncQuery::astNodeId == node.id).count;
+
+      case RETURN_TYPE:
+      {
+        node = queryCppAstNode(astNodeId_);
+
+        FuncResult functions = _db->query<cc::model::CppFunction>(
+          FuncQuery::mangledNameHash == node.mangledNameHash);
+
+        const model::CppFunction& function = *functions.begin();
+
+        return _db->query_value<model::CppTypeCount>(
+          TypeQuery::mangledNameHash == function.typeHash).count;
+
+        break;
+      }
+
+      case OVERRIDE:
+        return queryOverridesCount(astNodeId_, true);
+
+      case OVERRIDDEN_BY:
+        return queryOverridesCount(astNodeId_, false);
+
+      case READ:
+        return queryCppAstNodeCount(astNodeId_,
+          AstQuery::astType == model::CppAstNode::AstType::Read);
+
+      case WRITE:
+        return queryCppAstNodeCount(astNodeId_,
+          AstQuery::astType == model::CppAstNode::AstType::Write);
+
+      case TYPE:
+      {
+        node = queryCppAstNode(astNodeId_);
+
+        VarResult varNodes = _db->query<cc::model::CppVariable>(
+          VarQuery::mangledNameHash == node.mangledNameHash);
+
+        const model::CppVariable& variable = *varNodes.begin();
+
+        return _db->query_value<model::CppTypeCount>(
+          TypeQuery::mangledNameHash == variable.typeHash).count;
+
+        break;
+      }
+
+      case ALIAS:
+        return _db->query_value<model::CppTypedefCount>(
+          TypedefQuery::typeHash == node.mangledNameHash).count;
+
+      case INHERIT_FROM:
+        return _db->query_value<model::CppInheritanceCount>(
+          InhQuery::derived == node.mangledNameHash).count;
+
+      case INHERIT_BY:
+        return _db->query_value<model::CppInheritanceCount>(
+          InhQuery::base == node.mangledNameHash).count;
+
+      case DATA_MEMBER:
+        return _db->query_value<model::CppMemberTypeCount>(
+          MemTypeQuery::typeHash == node.mangledNameHash &&
+          MemTypeQuery::kind == model::CppMemberType::Kind::Field).count;
+
+      case METHOD:
+        return _db->query_value<model::CppMemberTypeCount>(
+          MemTypeQuery::typeHash == node.mangledNameHash &&
+          MemTypeQuery::kind == model::CppMemberType::Kind::Method).count;
+
+      case FRIEND:
+        return _db->query_value<model::CppFriendshipCount>(
+          FriendQuery::target == node.mangledNameHash).count;
+
+      case UNDERLYING_TYPE:
+        return _db->query_value<model::CppTypedefCount>(
+          TypedefQuery::mangledNameHash == node.mangledNameHash).count;
+
+      case ENUM_CONSTANTS:
+        return _db->query_value<model::CppEnumConstantsCount>(
+          EnumQuery::mangledNameHash == node.mangledNameHash).count;
+
+      case EXPANSION:
+        return _db->query_value<model::CppMacroExpansionCount>(
+          MacroExpansionQuery::astNodeId == node.id).count;
+
+      case UNDEFINITION:
+        return queryCppAstNodeCount(astNodeId_,
+          AstQuery::astType == model::CppAstNode::AstType::UnDefinition);
+
+      default:
+        return 0;
+    }
+  });
+}
+
 void CppServiceHandler::getReferenceTypes(
   std::map<std::string, std::int32_t>& return_,
   const core::AstNodeId& astNodeId_)
@@ -282,6 +552,7 @@ void CppServiceHandler::getReferenceTypes(
       return_["Local variables"]       = LOCAL_VAR;
       return_["Overrides"]             = OVERRIDE;
       return_["Overridden by"]         = OVERRIDDEN_BY;
+      return_["Return type"]           = RETURN_TYPE;
       break;
 
     case model::CppAstNode::SymbolType::Variable:
@@ -306,6 +577,11 @@ void CppServiceHandler::getReferenceTypes(
 
     case model::CppAstNode::SymbolType::Enum:
       return_["Enum constants"]        = ENUM_CONSTANTS;
+      break;
+
+    case model::CppAstNode::SymbolType::Macro:
+      return_["Expansions"]            = EXPANSION;
+      return_["Undefinitions"]         = UNDEFINITION;
       break;
   }
 }
@@ -458,6 +734,27 @@ void CppServiceHandler::getReferences(
         for (auto var : function.locals)
           nodes.push_back(queryCppAstNode(
             std::to_string(var.load()->astNodeId)));
+
+        break;
+      }
+
+      case RETURN_TYPE:
+      {
+        node = queryCppAstNode(astNodeId_);
+
+        FuncResult functions = _db->query<model::CppFunction>(
+          FuncQuery::mangledNameHash == node.mangledNameHash);
+        model::CppFunction function = *functions.begin();
+
+        TypeResult result = _db->query<model::CppType>(
+          TypeQuery::mangledNameHash == function.typeHash);
+
+        for (const model::CppType& type : result)
+        {
+          std::vector<model::CppAstNode> defs =
+            queryDefinitions(std::to_string(type.astNodeId));
+          nodes.insert(nodes.end(), defs.begin(), defs.end());
+        }
 
         break;
       }
@@ -631,15 +928,40 @@ void CppServiceHandler::getReferences(
 
         break;
       }
+
+      case EXPANSION:
+      {
+        node = queryCppAstNode(astNodeId_);
+
+        MacroExpansionResult mExpansions = _db->query<model::CppMacroExpansion>(
+          MacroExpansionQuery::astNodeId == node.id);
+
+        for (const auto& expansion : mExpansions)
+        {
+          node = queryCppAstNode(std::to_string(expansion.astNodeId));
+          node.astValue = expansion.expansion;
+          nodes.push_back(node);
+        }
+
+        break;
+      }
+
+      case UNDEFINITION:
+        nodes = queryCppAstNodes(
+          astNodeId_,
+          AstQuery::astType == model::CppAstNode::AstType::UnDefinition);
+        break;
     }
 
     std::sort(nodes.begin(), nodes.end(), compareByValue);
 
     return_.reserve(nodes.size());
-    std::transform(
-      nodes.begin(), nodes.end(),
-      std::back_inserter(return_),
-      CreateAstNodeInfo(_db, getTags(nodes)));
+    _transaction([this, &return_, &nodes](){
+      std::transform(
+        nodes.begin(), nodes.end(),
+        std::back_inserter(return_),
+        CreateAstNodeInfo(getTags(nodes)));
+    });
   });
 }
 
@@ -691,6 +1013,8 @@ void CppServiceHandler::getFileReferenceTypes(
 {
   return_["Types"]     = TYPES;
   return_["Functions"] = FUNCTIONS;
+  return_["Includes"]  = INCLUDES;
+  return_["Macros"]    = MACROS;
 }
 
 void CppServiceHandler::getFileReferences(
@@ -716,15 +1040,65 @@ void CppServiceHandler::getFileReferences(
           (AstQuery::astType == model::CppAstNode::AstType::Definition ||
            AstQuery::astType == model::CppAstNode::AstType::Declaration));
         break;
+
+      case INCLUDES:
+        nodes = queryCppAstNodesInFile(fileId_,
+          AstQuery::symbolType == model::CppAstNode::SymbolType::File);
+        break;
+
+      case MACROS:
+        nodes = queryCppAstNodesInFile(fileId_,
+          AstQuery::symbolType == model::CppAstNode::SymbolType::Macro &&
+          AstQuery::astType == model::CppAstNode::AstType::Definition);
+        break;
     }
 
     std::sort(nodes.begin(), nodes.end(), compareByValue);
 
     return_.reserve(nodes.size());
-    std::transform(
-      nodes.begin(), nodes.end(),
-      std::back_inserter(return_),
-      CreateAstNodeInfo(_db, getTags(nodes)));
+    _transaction([this, &return_, &nodes](){
+      std::transform(
+        nodes.begin(), nodes.end(),
+        std::back_inserter(return_),
+        CreateAstNodeInfo(getTags(nodes)));
+    });
+  });
+}
+
+std::int32_t CppServiceHandler::getFileReferenceCount(
+  const core::FileId& fileId_,
+  const std::int32_t referenceId_)
+{
+  return _transaction([&, this]() -> std::int32_t {
+    switch (referenceId_)
+    {
+      case TYPES:
+        return queryCppAstNodeCountInFile(fileId_,
+          AstQuery::symbolType == model::CppAstNode::SymbolType::Type &&
+          AstQuery::astType == model::CppAstNode::AstType::Definition);
+        break;
+
+      case FUNCTIONS:
+        return queryCppAstNodeCountInFile(fileId_,
+          AstQuery::symbolType == model::CppAstNode::SymbolType::Function &&
+          (AstQuery::astType == model::CppAstNode::AstType::Definition ||
+           AstQuery::astType == model::CppAstNode::AstType::Declaration));
+        break;
+
+      case INCLUDES:
+        return queryCppAstNodeCountInFile(fileId_,
+          AstQuery::symbolType == model::CppAstNode::SymbolType::File);
+        break;
+
+      case MACROS:
+        return queryCppAstNodeCountInFile(fileId_,
+          AstQuery::symbolType == model::CppAstNode::SymbolType::Macro &&
+          AstQuery::astType == model::CppAstNode::AstType::Definition);
+        break;
+
+      default:
+        return 0;
+    }
   });
 }
 
@@ -777,6 +1151,10 @@ void CppServiceHandler::getDiagramLegend(
     case CLASS_COLLABORATION:
       return_ = diagram.getClassCollaborationLegend();
       break;
+
+    case DETAILED_CLASS:
+      return_ = diagram.getDetailedClassLegend();
+      break;
   }
 }
 
@@ -784,7 +1162,23 @@ void CppServiceHandler::getFileDiagramTypes(
   std::map<std::string, std::int32_t>& return_,
   const core::FileId& fileId_)
 {
-  // TODO
+  model::FilePtr file = _transaction([&, this](){
+    return _db->query_one<model::File>(
+      FileQuery::id == stoull(fileId_));
+  });
+
+  if (file->type == model::File::DIRECTORY_TYPE)
+  {
+    return_["Internal architecture of this module"] = SUBSYSTEM_DEPENDENCY;
+    return_["This module depends on"]               = EXTERNAL_DEPENDENCY;
+    return_["Users of this module"]                 = EXTERNAL_USERS;
+  }
+  else
+  {
+    return_["Include Dependency"]                   = INCLUDE_DEPENDENCY;
+    return_["Component Users"]                      = COMPONENT_USERS;
+    return_["Interface Diagram"]                    = INTERFACE;
+  }
 }
 
 void CppServiceHandler::getFileDiagram(
@@ -792,14 +1186,73 @@ void CppServiceHandler::getFileDiagram(
   const core::FileId& fileId_,
   const int32_t diagramId_)
 {
-  // TODO
+  FileDiagram diagram(_db, _datadir, _config);
+  util::Graph graph;
+  graph.setAttribute("rankdir", "LR");
+
+  switch (diagramId_)
+  {
+    case COMPONENT_USERS:
+      diagram.getComponentUsersDiagram(graph, fileId_);
+      break;
+
+    case EXTERNAL_DEPENDENCY:
+      diagram.getExternalDependencyDiagram(graph, fileId_);
+      break;
+
+    case EXTERNAL_USERS:
+      diagram.getExternalUsersDiagram(graph, fileId_);
+      break;
+
+    case INCLUDE_DEPENDENCY:
+      diagram.getIncludeDependencyDiagram(graph, fileId_);
+      break;
+
+    case INTERFACE:
+      diagram.getInterfaceDiagram(graph, fileId_);
+      break;
+
+    case SUBSYSTEM_DEPENDENCY:
+      diagram.getSubsystemDependencyDiagram(graph, fileId_);
+      break;
+  }
+
+  if (graph.nodeCount() != 0)
+    return_ = graph.output(util::Graph::SVG);
 }
 
 void CppServiceHandler::getFileDiagramLegend(
   std::string& return_,
   const std::int32_t diagramId_)
 {
-  // TODO
+  FileDiagram diagram(_db, _datadir, _config);
+
+  switch (diagramId_)
+  {
+    case COMPONENT_USERS:
+      return_ = diagram.getComponentUsersDiagramLegend();
+        break;
+
+      case EXTERNAL_DEPENDENCY:
+        return_ = diagram.getExternalDependencyDiagramLegend();
+        break;
+
+      case EXTERNAL_USERS:
+        return_ = diagram.getExternalUsersDiagramLegend();
+        break;
+
+      case INCLUDE_DEPENDENCY:
+        return_ = diagram.getIncludeDependencyDiagramLegend();
+        break;
+
+      case INTERFACE:
+        return_ = diagram.getInterfaceDiagramLegend();
+        break;
+
+      case SUBSYSTEM_DEPENDENCY:
+        return_ = diagram.getSubsystemDependencyDiagramLegend();
+        break;
+  }
 }
 
 bool CppServiceHandler::compareByPosition(
@@ -858,6 +1311,14 @@ std::vector<model::CppAstNode> CppServiceHandler::queryCppAstNodesInFile(
   return std::vector<model::CppAstNode>(result.begin(), result.end());
 }
 
+std::uint32_t CppServiceHandler::queryCppAstNodeCountInFile(
+  const core::FileId& fileId_,
+  const odb::query<model::CppAstNode>& query_)
+{
+  return _db->query_value<model::CppAstCount>(
+    AstQuery::location.file == std::stoull(fileId_) && query_).count;
+}
+
 std::vector<model::CppAstNode> CppServiceHandler::queryDefinitions(
   const core::AstNodeId& astNodeId_)
 {
@@ -866,21 +1327,13 @@ std::vector<model::CppAstNode> CppServiceHandler::queryDefinitions(
     AstQuery::astType == model::CppAstNode::AstType::Definition);
 }
 
-std::vector<model::CppAstNode> CppServiceHandler::queryCalls(
-  const core::AstNodeId& astNodeId_)
+odb::query<model::CppAstNode> CppServiceHandler::astCallsQuery(
+  const model::CppAstNode& astNode_)
 {
-  std::vector<model::CppAstNode> nodes = queryDefinitions(astNodeId_);
+  const model::Position& start = astNode_.location.range.start;
+  const model::Position& end = astNode_.location.range.end;
 
-  if (nodes.empty())
-    return nodes;
-
-  model::CppAstNode node = nodes.front();
-
-  const model::Position& start = node.location.range.start;
-  const model::Position& end = node.location.range.end;
-
-  AstResult result = _db->query<model::CppAstNode>(
-    AstQuery::location.file == node.location.file.object_id() &&
+  return (AstQuery::location.file == astNode_.location.file.object_id() &&
     (AstQuery::astType == model::CppAstNode::AstType::Usage ||
      AstQuery::astType == model::CppAstNode::AstType::VirtualCall) &&
     AstQuery::symbolType == model::CppAstNode::SymbolType::Function &&
@@ -892,6 +1345,18 @@ std::vector<model::CppAstNode> CppServiceHandler::queryCalls(
     ((AstQuery::location.range.end.line == end.line &&
       AstQuery::location.range.end.column < end.column) ||
      AstQuery::location.range.end.line < end.line));
+}
+
+std::vector<model::CppAstNode> CppServiceHandler::queryCalls(
+  const core::AstNodeId& astNodeId_)
+{
+  std::vector<model::CppAstNode> nodes = queryDefinitions(astNodeId_);
+
+  if (nodes.empty())
+    return nodes;
+
+  model::CppAstNode node = nodes.front();
+  AstResult result = _db->query<model::CppAstNode>(astCallsQuery(node));
 
   nodes = std::vector<model::CppAstNode>(result.begin(), result.end());
 
@@ -1035,6 +1500,43 @@ CppServiceHandler::getTags(const std::vector<model::CppAstNode>& nodes_)
   return tags;
 }
 
+std::size_t CppServiceHandler::queryCppAstNodeCount(
+  const core::AstNodeId& astNodeId_,
+  const AstQuery& query_)
+{
+  model::CppAstNode node = queryCppAstNode(astNodeId_);
+
+  model::CppAstCount q = _db->query_value<model::CppAstCount>(
+    AstQuery::mangledNameHash == node.mangledNameHash &&
+    AstQuery::location.range.end.line != model::Position::npos &&
+    query_);
+
+  return q.count;
 }
+
+std::size_t CppServiceHandler::queryOverridesCount(
+  const core::AstNodeId& astNodeId_,
+  bool reverse_)
+{
+  model::CppAstNode node = queryCppAstNode(astNodeId_);
+
+  return transitiveClosureOfRel( model::CppRelation::Kind::Override,
+    node.mangledNameHash, reverse_).size();
 }
-}    
+
+std::size_t CppServiceHandler::queryCallsCount(
+  const core::AstNodeId& astNodeId_)
+{
+  std::vector<model::CppAstNode> nodes = queryDefinitions(astNodeId_);
+
+  if (nodes.empty())
+    return std::size_t(0);
+
+  model::CppAstNode node = nodes.front();
+
+  return _db->query_value<model::CppAstCount>(astCallsQuery(node)).count;
+}
+
+} // language
+} // service
+} // cc

@@ -223,6 +223,15 @@ function (on, query, dom, style, domConstruct, topic, declare, Memory,
         });
     },
 
+    onShow : function () {
+      var fileInfo = urlHandler.getFileInfo();
+
+      if (!fileInfo)
+        return;
+
+      this.openPath(fileInfo.path);
+    },
+
     setState : function (state) {
       var fileInfo = urlHandler.getFileInfo();
 
@@ -247,6 +256,7 @@ function (on, query, dom, style, domConstruct, topic, declare, Memory,
         return;
 
       this._filePath = path;
+      this._previousPath = path;
 
       var paneWidth = util.getFullWidth(this.domNode);
       var titleWidth = util.getFullWidth(this.fileManagerTitle);
@@ -270,6 +280,11 @@ function (on, query, dom, style, domConstruct, topic, declare, Memory,
    * Midnight Commander style File Manager.
    */
   var ProjectTreeMC = declare([FileBrowser, HtmlTreeNoIndent], {
+    constructor : function () {
+      this.inherited(arguments);
+      this._subscribeTopics();
+    },
+
     loadChildren : function (node) {
       var children = this.inherited(arguments);
 
@@ -289,12 +304,65 @@ function (on, query, dom, style, domConstruct, topic, declare, Memory,
 
     onOpen : function (item, node) {
       this._displayElements(node.getParent().getChildren(), false);
+      this._displayElements(node.getChildren(), true);
       this._setFilePath(item.fileInfo.path);
+    },
+
+    /**
+     * Iterate over the path and call callback function on each directory.
+     * @param {String} shortcut Directory path.
+     * @param {Function} cb Callback function.
+     */
+    pathVisitor : function (shortcut, cb) {
+      var that = this;
+
+      var currentNode = this.getChildren()[0];
+
+      var path = shortcut.split('/');
+      path[0] = '/';
+
+      path.forEach(function (directory) {
+        if (!directory.length)
+          return;
+
+        children = currentNode.getChildren();
+        index = util.findIf(children, function (child) {
+          return child.label.match(
+            /(<[^>]*>)?([^<]*)(<[^>]*>)?/)[2] === directory;
+        });
+        currentNode = children[index];
+
+        cb(currentNode);
+      });
+
+      return currentNode;
+    },
+
+    openPath : function (path) {
+      var that = this;
+
+      if (this._previousPath === path)
+        return;
+
+      if (this._previousPath)
+        this.pathVisitor(this._previousPath, function (node) {
+          that._collapseNode(node);
+        });
+
+      var currentNode = this.pathVisitor(path, function (node) {
+        that._expandNode(node);
+      });
+
+      var children = currentNode.item.fileInfo.isDirectory
+        ? currentNode.getChildren()
+        : currentNode.getParent().getChildren();
+
+      this._displayElements(children, true);
+      this._setFilePath(path);
     },
 
     onClick : function (item, node, event) {
       var that = this;
-
       if (item.isFolderUpElement) {
         var parent = node.getParent();
         var children = parent.getParent().getChildren();
@@ -302,36 +370,7 @@ function (on, query, dom, style, domConstruct, topic, declare, Memory,
         this._displayElements(children, true);
         this._setFilePath(parent.item.fileInfo.path);
       } else if (item.shortcut) { // Click on a label
-        if (this._previousPath === item.shortcut)
-          return;
-
-        this._previousPath = item.shortcut;
-
-        var currentNode = this.getChildren()[0];
-
-        var path = item.shortcut.split('/');
-        path[0] = '/';
-
-        path.forEach(function (directory) {
-          if (!directory.length)
-            return;
-
-          children = currentNode.getChildren();
-          index = util.findIf(children, function (child) {
-            return child.label.match(
-              /(<[^>]*>)?([^<]*)(<[^>]*>)?/)[2] === directory;
-          });
-          currentNode = children[index];
-          that._expandNode(currentNode);
-        });
-
-        var children = currentNode.getChildren();
-        children.forEach(function (child){
-          that._collapseNode(child);
-        });
-
-        this._displayElements(children, true);
-        this._setFilePath(item.shortcut);
+        this.openPath(item.shortcut);
       } else {
         this.inherited(arguments);
       }
@@ -342,7 +381,14 @@ function (on, query, dom, style, domConstruct, topic, declare, Memory,
         if (node.item.id !== 'project' && node.item.shortcut === undefined)
           style.set(node.rowNode, 'display', display ? 'block' : 'none');
       });
-    }
+    },
+
+    _subscribeTopics : function () {
+      var that = this;
+      topic.subscribe('codecompass/openPath', function (path) {
+        that.openPath(path);
+      });
+    },
   });
 
   /**
@@ -369,6 +415,8 @@ function (on, query, dom, style, domConstruct, topic, declare, Memory,
     },
 
     startup : function () {
+      this.inherited(arguments);
+
       var fileManagerTitleBox = domConstruct.create('span', {
         id : 'filemanagerButton',
       }, this.id + '_button_title', 'replace');
@@ -385,6 +433,10 @@ function (on, query, dom, style, domConstruct, topic, declare, Memory,
 
     setState : function () {
       this.currentChild.setState.apply(this.currentChild, arguments);
+    },
+
+    onShow : function () {
+      this.currentChild.onShow(arguments);
     }
   });
 

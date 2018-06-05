@@ -3,9 +3,14 @@ include_directories(
   gen-cpp
   ${PROJECT_SOURCE_DIR}/model/include
   ${PROJECT_SOURCE_DIR}/util/include
-  ${PROJECT_SOURCE_DIR}/webserver/include
-  ${THRIFT_LIBTHRIFT_INCLUDE_DIRS})
+  ${PROJECT_SOURCE_DIR}/webserver/include)
 
+include_directories(SYSTEM
+  ${THRIFT_LIBTHRIFT_INCLUDE_DIRS}
+  ${ODB_INCLUDE_DIRS})
+
+# The folders here are added so that executing `make clean` removes all
+# generated files.
 add_custom_command(
   OUTPUT
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp/common_constants.cpp
@@ -13,13 +18,18 @@ add_custom_command(
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp/common_types.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp/common_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/gen-java
+    ${CMAKE_CURRENT_SOURCE_DIR}/gen-js
   COMMAND
-    thrift --gen cpp --gen js --gen java -o ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/common.thrift
+    thrift --gen cpp --gen js --gen java
+      -o ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/common.thrift
   DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/common.thrift
   COMMENT
-    "Generate thrift for common.thrift")
+    "Generating Thrift for common.thrift")
 
+# Do not add the same folders to both output commands as it produces a warning.
 add_custom_command(
   OUTPUT
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp/project_constants.cpp
@@ -28,13 +38,14 @@ add_custom_command(
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp/project_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp/ProjectService.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp/ProjectService.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp
   COMMAND
-    thrift --gen cpp --gen js --gen java -o ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/project.thrift
+    thrift --gen cpp --gen js --gen java
+      -o ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/project.thrift
   DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/project.thrift
   COMMENT
-    "Generate thrift for workspace.thrift")
+    "Generating Thrift for project.thrift")
 
 add_library(commonthrift STATIC
   gen-cpp/common_constants.cpp
@@ -63,6 +74,8 @@ add_jar(corethriftjava
   ${CMAKE_CURRENT_SOURCE_DIR}/gen-java/cc/service/core/Range.java
   ${CMAKE_CURRENT_SOURCE_DIR}/gen-java/cc/service/core/Timeout.java
   OUTPUT_NAME corethrift)
+
+add_dependencies(corethriftjava commonthrift)
 
 add_library(projectservice SHARED
   src/projectservice.cpp

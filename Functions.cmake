@@ -21,6 +21,7 @@ function(generate_odb_files _src)
         -I ${CMAKE_CURRENT_SOURCE_DIR}/include
         -I ${CMAKE_SOURCE_DIR}/model/include
         -I ${CMAKE_SOURCE_DIR}/util/include
+        -I ${ODB_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/${_file}
       DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/${_file}
@@ -49,7 +50,7 @@ endfunction(add_odb_library)
 function(install_sql _dir)
   install(
     DIRECTORY ${_dir}
-    DESTINATION share/codecompass/sql
+    DESTINATION ${INSTALL_SQL_DIR}
     FILES_MATCHING PATTERN "*.sql")
 endfunction(install_sql)
 
@@ -81,4 +82,8 @@ function(install_webplugin _dir)
   # Copy images
   file(GLOB _images "${_dir}/images/*.jpg" "${_dir}/images/*.png")
   install(FILES ${_images} DESTINATION "${INSTALL_WEBROOT_DIR}/images" )
+
+  # Collect userguides
+  file(GLOB _userguides "${_dir}/userguide/*.md")
+  set_property(GLOBAL APPEND PROPERTY USERGUIDES "${_userguides}")
 endfunction(install_webplugin)

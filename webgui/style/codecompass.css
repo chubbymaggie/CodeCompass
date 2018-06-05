@@ -144,6 +144,16 @@ svg {
   color: #8D2222;
 }
 
+#infotree .reference-count,
+#fileoutline .reference-count {
+  font-size: .83em;
+  line-height: 0.5em;
+  vertical-align: baseline;
+  position: relative;
+  top: -0.4em;
+  color: grey;
+}
+
 #infotree .icon,
 #filemanager .icon,
 #queryresult .icon,
@@ -212,6 +222,10 @@ svg {
   color: grey;
 }
 
+.label-return-type {
+  color: #957d47;
+}
+
 .dijitTreeRowHover, .dijitTreeContent:hover{
   cursor:pointer;
 }
@@ -242,6 +256,23 @@ svg {
 .editor .header .parsestatus {
   white-space: nowrap;
   cursor: pointer;
+  font-weight: bold;
+  padding: 2px;
+}
+
+.editor .header .notparsed {
+  background-color: #c13333;
+  color: #fff;
+}
+
+.editor .header .fullyparsed {
+  background-color: #43ba45;
+  color: #fff;
+}
+
+.editor .header .partiallyparsed {
+  background-color: #ffa500;
+  color: #fff;
 }
 
 .editor .header .filename {
@@ -314,6 +345,56 @@ svg {
 
 /* InfoBox */
 
+.documentation dl.param > dt,
+.documentation dl.tparam > dt {
+  font-weight: bold;
+}
+
+.documentation .param dd > div,
+.documentation .tparam dd > div {
+  display: inline-block;
+  padding-right: 5px;
+}
+
+.documentation .param .dir {
+  font-style: italic;
+}
+
+.documentation .signature {
+  padding: 5px;
+  margin-bottom: 10px;
+  color: #3D578C;
+  border: 1px solid #C4CFE5;
+  background-color: #EBEFF6;
+}
+
+.documentation .group > div.comment {
+  padding-left: 10px;
+}
+
+.documentation .group {
+  padding-bottom: 10px;
+}
+
+.documentation .icon-visibility {
+  display: inline-block;
+  padding-right: 5px;
+}
+
+.documentation .main-doc {
+  padding: 10px;
+}
+
+.documentation div {
+  margin: 0px;
+}
+
+.documentation .main-doc > div,
+.documentation .comment {
+  line-height: 1.5em;
+  display: inline-block;
+}
+
 .infobox {
   position: absolute !important;
   top: 100px;
@@ -333,7 +414,7 @@ svg {
 }
 
 .infobox dt, 
-.tooltip-info dt{
+.tooltip-info dt {
   font-size: 12pt;
 }
 
@@ -345,7 +426,7 @@ svg {
   margin-top: 5px;
 }
 
-.infobox .param dd, 
+.infobox .param dd,
 .tooltip-info .param dd{
   margin-left: 20px;
 }
@@ -402,7 +483,7 @@ svg {
 .cb-marked-3 { background-color: #d865c5; }
 .cb-marked-4 { background-color: #f93e3e; }
 
-.cb-marked-select { background-color: #bbcce0; }
+.cb-marked-select { background-color: #f0d8a8; }
 .cb-marked-slicing { background-color: #c3e0bb; }
 
 /* Context Buttons */
@@ -564,4 +645,13 @@ div.CodeMirror-linenumber {
   height: 100%;
   background: center center no-repeat url(/images/loading.gif);
   background-size: 100px 100px;
+}
+
+.pathelement {
+  cursor: pointer;
+}
+
+.pathelement:hover {
+  text-decoration: underline;
+  color: #335180;
 }

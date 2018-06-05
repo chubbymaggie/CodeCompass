@@ -24,6 +24,8 @@
 #include <model/cppinheritance-odb.hxx>
 #include <model/cppnamespace.h>
 #include <model/cppnamespace-odb.hxx>
+#include <model/cpprelation.h>
+#include <model/cpprelation-odb.hxx>
 #include <model/cpptype.h>
 #include <model/cpptype-odb.hxx>
 #include <model/cpptypedef.h>
@@ -35,6 +37,7 @@
 #include <util/odbtransaction.h>
 #include <util/logutil.h>
 
+#include "manglednamecache.h"
 #include "filelocutil.h"
 #include "symbolhelper.h"
 
@@ -66,12 +69,13 @@ public:
   ClangASTVisitor(
     ParserContext& ctx_,
     clang::ASTContext& astContext_,
-    std::unordered_map<model::CppAstNodeId, std::uint64_t>& mangledNameCache_,
+    MangledNameCache& mangledNameCache_,
     std::unordered_map<const void*, model::CppAstNodeId>& clangToAstNodeId_)
     : _isImplicit(false),
       _ctx(ctx_),
       _clangSrcMgr(astContext_.getSourceManager()),
       _fileLocUtil(astContext_.getSourceManager()),
+      _astContext(astContext_),
       _mngCtx(astContext_.createMangleContext()),
       _cppSourceType("CPP"),
       _mangledNameCache(mangledNameCache_),
@@ -84,18 +88,18 @@ public:
     _ctx.srcMgr.persistFiles();
 
     (util::OdbTransaction(_ctx.db))([this]{
-      persistAll(_astNodes);
-      persistAll(_enumConstants);
-      persistAll(_enums);
-      persistAll(_types);
-      persistAll(_typedefs);
-      persistAll(_variables);
-      persistAll(_namespaces);
-      persistAll(_members);
-      persistAll(_inheritances);
-      persistAll(_friends);
-      persistAll(_functions);
-      persistAll(_relations);
+      util::persistAll(_astNodes, _ctx.db);
+      util::persistAll(_enumConstants, _ctx.db);
+      util::persistAll(_enums, _ctx.db);
+      util::persistAll(_types, _ctx.db);
+      util::persistAll(_typedefs, _ctx.db);
+      util::persistAll(_variables, _ctx.db);
+      util::persistAll(_namespaces, _ctx.db);
+      util::persistAll(_members, _ctx.db);
+      util::persistAll(_inheritances, _ctx.db);
+      util::persistAll(_friends, _ctx.db);
+      util::persistAll(_functions, _ctx.db);
+      util::persistAll(_relations, _ctx.db);
     });
   }
 
@@ -118,11 +122,6 @@ public:
 
   bool TraverseFunctionDecl(clang::FunctionDecl* fd_)
   {
-    // There are some built-in functions, generally prefixed by __builtin, like
-    // __builtin_memmove. Here we skip these functions.
-    if (fd_->getBuiltinID() != 0)
-      return true;
-
     _functionStack.push(std::make_shared<model::CppFunction>());
 
     bool b = clang::RecursiveASTVisitor<
@@ -576,7 +575,7 @@ public:
 
     model::CppAstNodePtr astNode = std::make_shared<model::CppAstNode>();
 
-    astNode->astValue = fn_->getNameAsString();
+    astNode->astValue = getSignature(fn_);
     astNode->location = getFileLoc(fn_->getLocStart(), fn_->getLocEnd());
     astNode->mangledName = getMangledName(_mngCtx, fn_);
     astNode->mangledNameHash = util::fnvHash(astNode->mangledName);
@@ -601,7 +600,7 @@ public:
 
     cppFunction->astNodeId = astNode->id;
     cppFunction->mangledNameHash = astNode->mangledNameHash;
-    cppFunction->name = getSignature(fn_);
+    cppFunction->name = fn_->getNameAsString();
     cppFunction->qualifiedName = fn_->getQualifiedNameAsString();
     cppFunction->typeHash = util::fnvHash(getMangledName(_mngCtx, qualType));
     cppFunction->qualifiedType = qualType.getAsString();
@@ -680,7 +679,7 @@ public:
 
       model::CppAstNodePtr astNode = std::make_shared<model::CppAstNode>();
 
-      astNode->astValue = member->getNameAsString();
+      astNode->astValue = getSignature(cd_);
       astNode->location = getFileLoc(
         init->getSourceRange().getBegin(),
         init->getSourceRange().getEnd());
@@ -781,7 +780,7 @@ public:
     model::CppAstNodePtr astNode = std::make_shared<model::CppAstNode>();
 
     astNode->astValue = vd_->getNameAsString();
-    astNode->location = getFileLoc(vd_->getLocation(), vd_->getLocEnd());
+    astNode->location = getFileLoc(vd_->getLocation(), vd_->getLocation());
     astNode->mangledName = getMangledName(_mngCtx, vd_, astNode->location);
     astNode->mangledNameHash = util::fnvHash(astNode->mangledName);
     astNode->symbolType
@@ -928,7 +927,7 @@ public:
 
     const clang::CXXConstructorDecl* ctor = ce_->getConstructor();
 
-    astNode->astValue = ctor->getNameAsString();
+    astNode->astValue = getSignature(ctor);
     astNode->location = getFileLoc(ce_->getLocStart(), ce_->getLocEnd());
     astNode->mangledName = getMangledName(_mngCtx, ctor);
     astNode->mangledNameHash = util::fnvHash(astNode->mangledName);
@@ -957,7 +956,7 @@ public:
 
     model::CppAstNodePtr astNode = std::make_shared<model::CppAstNode>();
 
-    astNode->astValue = functionDecl->getNameAsString();
+    astNode->astValue = getSignature(functionDecl);
     astNode->location = getFileLoc(ne_->getLocStart(), ne_->getLocEnd());
     astNode->mangledName = getMangledName(_mngCtx, functionDecl);
     astNode->mangledNameHash = util::fnvHash(astNode->mangledName);
@@ -985,7 +984,7 @@ public:
 
     model::CppAstNodePtr astNode = std::make_shared<model::CppAstNode>();
 
-    astNode->astValue = functionDecl->getNameAsString();
+    astNode->astValue = getSignature(functionDecl);
     astNode->location = getFileLoc(de_->getLocStart(), de_->getLocEnd());
     astNode->mangledName = getMangledName(_mngCtx, functionDecl);
     astNode->mangledNameHash = util::fnvHash(astNode->mangledName);
@@ -1010,9 +1009,15 @@ public:
     const clang::NamedDecl* namedCallee
       = llvm::dyn_cast<clang::NamedDecl>(callee);
 
+    const clang::FunctionDecl* funcCallee
+      = llvm::dyn_cast<clang::FunctionDecl>(callee);
+
     model::CppAstNodePtr astNode = std::make_shared<model::CppAstNode>();
 
-    astNode->astValue = namedCallee->getNameAsString();
+    astNode->astValue
+      = funcCallee
+      ? getSignature(funcCallee)
+      : namedCallee->getNameAsString();
     astNode->location = getFileLoc(ce_->getLocStart(), ce_->getLocEnd());
     astNode->mangledName = getMangledName(
       _mngCtx,
@@ -1041,17 +1046,19 @@ public:
 
     if (const clang::VarDecl* vd = llvm::dyn_cast<clang::VarDecl>(decl))
     {
+      model::FileLoc location =
+        getFileLoc(vd->getLocation(), vd->getLocation());
+
       astNode->astValue = vd->getNameAsString();
       astNode->location = getFileLoc(dr_->getLocStart(), dr_->getLocEnd());
-      astNode->mangledName
-        = getMangledName(_mngCtx, vd, astNode->location);
+      astNode->mangledName = getMangledName(_mngCtx, vd, location);
       astNode->mangledNameHash = util::fnvHash(astNode->mangledName);
       astNode->symbolType
         = isFunctionPointer(vd)
         ? model::CppAstNode::SymbolType::FunctionPtr
         : model::CppAstNode::SymbolType::Variable;
       astNode->astType
-        = isWritten(vd)
+        = isWritten(dr_)
         ? model::CppAstNode::AstType::Write
         : model::CppAstNode::AstType::Read;
 
@@ -1072,7 +1079,7 @@ public:
     else if (const clang::FunctionDecl* fd
       = llvm::dyn_cast<clang::FunctionDecl>(decl))
     {
-      astNode->astValue = fd->getNameAsString();
+      astNode->astValue = getSignature(fd);
       astNode->location = getFileLoc(fd->getLocStart(), fd->getLocEnd());
       astNode->mangledName = getMangledName(_mngCtx, fd);
       astNode->mangledNameHash = util::fnvHash(astNode->mangledName);
@@ -1091,21 +1098,23 @@ public:
   bool VisitMemberExpr(clang::MemberExpr* me_)
   {
     const clang::ValueDecl* vd = me_->getMemberDecl();
+    const clang::CXXMethodDecl* method
+      = llvm::dyn_cast<clang::CXXMethodDecl>(vd);
 
     model::CppAstNodePtr astNode = std::make_shared<model::CppAstNode>();
 
-    astNode->astValue = vd->getNameAsString();
+    astNode->astValue = method ? getSignature(method) : vd->getNameAsString();
     astNode->location = getFileLoc(me_->getLocStart(), me_->getLocEnd());
     astNode->mangledName = getMangledName(_mngCtx, vd);
     astNode->mangledNameHash = util::fnvHash(astNode->mangledName);
     astNode->symbolType
-      = llvm::isa<clang::CXXMethodDecl>(vd)
+      = method
       ? model::CppAstNode::SymbolType::Function
       : isFunctionPointer(vd)
       ? model::CppAstNode::SymbolType::FunctionPtr
       : model::CppAstNode::SymbolType::Variable;
     astNode->astType
-      = isWritten(llvm::dyn_cast<clang::VarDecl>(vd))
+      = isWritten(me_)
       ? model::CppAstNode::AstType::Write
       : model::CppAstNode::AstType::Read;
 
@@ -1151,12 +1160,26 @@ private:
    */
   bool insertToCache(const void* clangPtr_, model::CppAstNodePtr node_)
   {
-    static std::mutex cacheMutex;
-    std::lock_guard<std::mutex> guard(cacheMutex);
-
     _clangToAstNodeId[clangPtr_] = node_->id;
-    return _mangledNameCache.insert(
-      std::make_pair(node_->id, node_->mangledNameHash)).second;
+    return _mangledNameCache.insert(*node_);
+  }
+
+  /**
+   * This function returns a pointer to the corresponding model::File object
+   * based on the given source location. The object is read from the cache of
+   * the actual translation unit. If the file is not in the cache of the actual
+   * translation unit yet then it will get the file from the Source Manager.
+   */
+  model::FilePtr getFile(const clang::SourceLocation& loc_)
+  {
+    std::string path = _fileLocUtil.getFilePath(loc_);
+
+    std::unordered_map<std::string, model::FilePtr>::const_iterator it =
+      _files.find(path);
+
+    return _files[path] = it != _files.end()
+      ? it->second
+      : _ctx.srcMgr.getFile(path);
   }
 
   model::FileLoc getFileLoc(
@@ -1167,7 +1190,7 @@ private:
 
     if (start_.isInvalid() || end_.isInvalid())
     {
-      fileLoc.file = _ctx.srcMgr.getFile(_fileLocUtil.getFilePath(start_));
+      fileLoc.file = getFile(start_);
       const std::string& type = fileLoc.file.load()->type;
       if (type != model::File::DIRECTORY_TYPE && type != _cppSourceType)
       {
@@ -1188,7 +1211,7 @@ private:
     if (!_isImplicit)
       _fileLocUtil.setRange(realStart, realEnd, fileLoc.range);
 
-    fileLoc.file = _ctx.srcMgr.getFile(_fileLocUtil.getFilePath(realStart));
+    fileLoc.file = getFile(realStart);
 
     const std::string& type = fileLoc.file.load()->type;
     if (type != model::File::DIRECTORY_TYPE && type != _cppSourceType)
@@ -1284,36 +1307,105 @@ private:
     return getVisibility(decl_->getAccess());
   }
 
-  bool isWritten(const clang::VarDecl* vd_) const
+  /**
+   * This function returns true if the given type makes it possible to modify
+   * (write) the value, i.e. if it is a non-const reference or pointer.
+   */
+  bool isWritable(const clang::QualType& type_) const
   {
-    // TODO
-    return true;
+    const clang::Type* typePtr = type_.getTypePtr();
+
+    return
+      ((typePtr->isReferenceType() || typePtr->isPointerType()) &&
+       !typePtr->getPointeeType().isConstQualified()) ||
+      typePtr->isRValueReferenceType();
   }
 
-  // TODO: This should be in the model.
-  template <typename Cont>
-  void persistAll(Cont& cont_)
+  /**
+   * This function returns true if the given expression (which is usually a
+   * DeclRefExpr) is in writing context, i.e. on the left hand side of an
+   * assignment or as a function call argument passed by reference, etc.
+   */
+  bool isWritten(const clang::Expr* expr_) const
   {
-    for (typename Cont::value_type& item : cont_)
+    while (expr_)
     {
-      try
+      clang::ASTContext::DynTypedNodeList parents
+        = _astContext.getParents(*expr_);
+
+      const clang::ast_type_traits::DynTypedNode& parent = parents[0];
+
+      if (const clang::BinaryOperator* op = parent.get<clang::BinaryOperator>())
       {
-        _ctx.db->persist(*item);
+        return
+          (op->isAssignmentOp() ||
+           op->isCompoundAssignmentOp() ||
+           op->isShiftAssignOp()) &&
+          op->getLHS() == expr_;
       }
-      catch (const odb::object_already_persistent& ex)
+      else if (const clang::UnaryOperator* op
+        = parent.get<clang::UnaryOperator>())
       {
-        LOG(debug)
-          << item->toString();
-        LOG(warning)
-          << ex.what() << std::endl
-          << "AST nodes in this translation unit will be ignored!";
+        return op->isIncrementDecrementOp() && op->getSubExpr() == expr_;
       }
-      catch (const odb::database_exception& ex)
+      else if (const clang::CallExpr* call = parent.get<clang::CallExpr>())
       {
-        // TODO: Error code should be checked and rethrow if it is not unique
-        // constraint error. Error code may be database specific.
+        const clang::FunctionDecl* decl = call->getDirectCallee();
+
+        if (!decl)
+          return false;
+
+        const clang::CXXMethodDecl* method
+          = llvm::dyn_cast<clang::CXXMethodDecl>(decl);
+
+        if (method && !method->isConst() &&
+            call->getNumArgs() && call->getArg(0) == expr_)
+          return true;
+
+        // The first argument of CallExpr is "this" if it's a CXXMethodDecl.
+        unsigned x = method != nullptr;
+
+        for (unsigned i = 0;
+             i + x < call->getNumArgs() && i < decl->getNumParams();
+             ++i)
+        {
+          clang::QualType paramType = decl->getParamDecl(i)->getType();
+          if (isWritable(paramType) && call->getArg(i + x) == expr_)
+            return true;
+        }
+
+        return false;
       }
+      else if (const clang::CXXConstructExpr* call
+        = parent.get<clang::CXXConstructExpr>())
+      {
+        const clang::CXXConstructorDecl* decl = call->getConstructor();
+
+        if (!decl)
+          return false;
+
+        for (unsigned i = 0;
+             i < call->getNumArgs() && i < decl->getNumParams();
+             ++i)
+        {
+          clang::QualType paramType = decl->getParamDecl(i)->getType();
+          if (isWritable(paramType) && call->getArg(i) == expr_)
+            return true;
+        }
+
+        return false;
+      }
+      else if (
+        parent.get<clang::CXXDeleteExpr>() ||
+        parent.get<clang::ArraySubscriptExpr>())
+      {
+        return true;
+      }
+
+      expr_ = parent.get<clang::Expr>();
     }
+
+    return false;
   }
 
   std::vector<model::CppAstNodePtr>      _astNodes;
@@ -1340,10 +1432,12 @@ private:
   ParserContext& _ctx;
   const clang::SourceManager& _clangSrcMgr;
   FileLocUtil _fileLocUtil;
+  clang::ASTContext& _astContext;
   clang::MangleContext* _mngCtx;
   const std::string _cppSourceType;
+  std::unordered_map<std::string, model::FilePtr> _files;
 
-  std::unordered_map<model::CppAstNodeId, std::uint64_t>& _mangledNameCache;
+  MangledNameCache& _mangledNameCache;
   std::unordered_map<const void*, model::CppAstNodeId>& _clangToAstNodeId;
 };
 

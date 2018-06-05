@@ -28,10 +28,11 @@ public:
   ~SourceManager();
 
   /**
-   * This function returns a pointer to a model::File object. The object is
-   * persisted in the database or returned from cache if already persistent.
-   * @param path_ The file path to persist. Note that the parent directories
-   * will also be added automatically.
+   * This function returns a pointer to the corresponding model::File object
+   * based on the given path_. The object is read from a cache. If the file is
+   * not in the cache yet then a model::File entry is created, persisted in the
+   * database and placed in the cache. If the file doesn't exist then it returns
+   * nullptr.
    */
   model::FilePtr getFile(const std::string& path_);
 
@@ -63,15 +64,6 @@ private:
    * that contains the file content.
    */
   model::FileContentPtr createFileContent(const std::string& path_) const;
-
-  /**
-   * This function returns a pointer to the corresponding model::File object
-   * based on the given path_. The object is read from a cache. If the file is
-   * not in the cache yet then a model::File entry is created, persisted in the
-   * database and placed in the cache. If the file doesn't exist then it returns
-   * nullptr.
-   */
-  model::FilePtr getCreateFile(const std::string& path_);
 
   /**
    * This function creates a model::File object and fills its attributes based

@@ -10,9 +10,8 @@ struct AstNodeInfo
   3:string astNodeType /** String representation of AST type (e.g. Statement/Declaration/Usage). */
   4:string symbolType /** String representation of Symbol type (e.g. Function/Type/Variable). */
   5:string astNodeValue /** String representation of an AST node. */
-  6:string srcText /** Corresponding code fragment in the source code. */
-  7:common.FileRange range /** Source code range of an AST node. */
-  8:list<string> tags /** Meta information of the AST node (e.g. public, static, virtual etc.) */
+  6:common.FileRange range /** Source code range of an AST node. */
+  7:list<string> tags /** Meta information of the AST node (e.g. public, static, virtual etc.) */
 }
 
 struct SyntaxHighlight
@@ -53,6 +52,16 @@ service LanguageService
     throws (1:common.InvalidInput ex)
 
   /**
+   * Returns the source code text that corresponds to the given AST node.
+   * @param astNodeId ID of an AST node.
+   * @return The source text as a verbatim string.
+   * @exception common.InvalidId Exception is thrown if no AST node belongs to
+   * the given ID.
+   */
+  string getSourceText(1:common.AstNodeId astNodeId)
+    throws (1:common.InvalidId ex)
+
+  /**
    * Returns the documentation which belongs to the given AST node if any
    * (Doxygen, Python doc, etc.).
    * @param astNodeId ID of an AST node.
@@ -70,7 +79,7 @@ service LanguageService
    * @exception common.InvalidId Exception is thrown if no AST node belongs to
    * the given ID.
    */
-  map<string, string> getProperties(1:common.AstNodeId astNodeId)
+  map<string, string> getProperties(1:common.AstNodeId astNodeIds)
     throws (1:common.InvalidId ex)
 
   /**
@@ -152,6 +161,17 @@ service LanguageService
     throws (1:common.InvalidId ex)
 
   /**
+   * Returns reference count to the AST node identified by astNodeId.
+   * @param astNodeId The AST node to be queried.
+   * @param referenceId Reference type (such as derivedClasses, definition,
+   * usages etc.). Possible values can be queried by getReferenceTypes().
+   * @return Number of rereferences
+   */
+  i32 getReferenceCount(
+    1:common.AstNodeId astNodeId,
+    2:i32 referenceId)
+
+  /**
    * Returns references to the AST node identified by astNodeId.
    * @param astNodeId The AST node to be queried.
    * @param referenceId Reference type (such as derivedClasses, definition,
@@ -207,7 +227,7 @@ service LanguageService
     3:i32 pageSize,
     4:i32 pageNo)
       throws (1:common.InvalidId ex)
- 
+
   /**
    * Returns a list of reference types that can be listed for the requested file
    * (such as includes, included by, etc.).
@@ -232,6 +252,17 @@ service LanguageService
     1:common.FileId fileId,
     2:i32 referenceId)
       throws (1:common.InvalidId ex)
+
+  /**
+   * Returns reference count to the File node identified by fileId.
+   * @param fileId The file ID we want to get the references count about.
+   * @param referenceId Reference type (such as includes, functions, macros,
+   * files etc.). Possible values can be queried by getFileReferenceTypes().
+   * @return Number of references.
+   */
+  i32 getFileReferenceCount(
+    1:common.FileId fileId,
+    2:i32 referenceId)
 
   /**
    * Returns the syntax highlight elements for a whole file.

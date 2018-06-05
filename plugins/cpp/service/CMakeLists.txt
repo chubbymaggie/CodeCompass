@@ -6,13 +6,16 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/service/language/gen-cpp
   ${PROJECT_SOURCE_DIR}/service/project/gen-cpp
   ${PROJECT_SOURCE_DIR}/service/project/include
-  ${PLUGIN_DIR}/model/include
+  ${PLUGIN_DIR}/model/include)
+
+include_directories(SYSTEM
   ${THRIFT_LIBTHRIFT_INCLUDE_DIRS})
 
 add_library(cppservice SHARED
   src/cppservice.cpp
   src/plugin.cpp
-  src/diagram.cpp)
+  src/diagram.cpp
+  src/filediagram.cpp)
 
 target_compile_options(cppservice PUBLIC -Wno-unknown-pragmas)
 

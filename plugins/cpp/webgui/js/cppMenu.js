@@ -1,4 +1,4 @@
-define([
+require([
   'dojo/topic',
   'dijit/Menu',
   'dijit/MenuItem',
@@ -17,6 +17,9 @@ function (topic, Menu, MenuItem, PopupMenuItem, astHelper, model, viewHandler) {
         label : 'Jump to definition',
         accelKey : 'ctrl - click',
         onClick : function () {
+          if (!nodeInfo || !fileInfo)
+            return;
+
           var languageService = model.getLanguageService(fileInfo.type);
           astHelper.jumpToDef(nodeInfo.id, model.cppservice);
         }
@@ -35,6 +38,9 @@ function (topic, Menu, MenuItem, PopupMenuItem, astHelper, model, viewHandler) {
       return new MenuItem({
         label : 'Info Tree',
         onClick : function () {
+          if (!nodeInfo || !fileInfo)
+            return;
+
           topic.publish('codecompass/infotree', {
             fileType : fileInfo.type,
             elementInfo : nodeInfo
@@ -49,9 +55,32 @@ function (topic, Menu, MenuItem, PopupMenuItem, astHelper, model, viewHandler) {
     service : model.cppservice
   });
 
+  var infobox = {
+    id : 'cpp-text-infobox',
+    render : function (nodeInfo, fileInfo) {
+      return new MenuItem({
+        label : 'Documentation',
+        onClick : function () {
+          topic.publish('codecompass/documentation', {
+            fileType    : fileInfo.type,
+            elementInfo : nodeInfo
+          });
+        }
+      });
+    }
+  };
+
+  viewHandler.registerModule(infobox, {
+    type : viewHandler.moduleType.TextContextMenu,
+    service : model.cppservice
+  });
+
   var diagrams = {
     id : 'cpp-text-diagrams',
     render : function (nodeInfo, fileInfo) {
+      if (!nodeInfo || !fileInfo)
+        return;
+
       var submenu = new Menu();
 
       var diagramTypes = model.cppservice.getDiagramTypes(nodeInfo.id);

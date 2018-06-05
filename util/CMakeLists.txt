@@ -4,10 +4,12 @@ include_directories(
   ${LLVM_INCLUDE_DIRS}
   ${BOOST_INCLUDE_DIRS})
 
+include_directories(SYSTEM
+  ${ODB_INCLUDE_DIRS})
+
 add_library(util STATIC
   src/dbutil.cpp
   src/parserutil.cpp
-  src/webserverutil.cpp
   src/dynamiclibrary.cpp
   src/logutil.cpp
   src/graph.cpp

@@ -29,12 +29,12 @@ struct File
   {
     PSNone = 0,
     PSPartiallyParsed = 1,
-    PSFullyParsed = 2,
-    PSVCView = 10000, //dummy for "Version Control View" in the editor
+    PSFullyParsed = 2
   };
 
   static constexpr const char* DIRECTORY_TYPE = "Dir";
   static constexpr const char* UNKNOWN_TYPE   = "Unknown";
+  static constexpr const char* BINARY_TYPE    = "Binary";
 
   #pragma db id
   FileId id;
@@ -70,11 +70,8 @@ struct File
   
   bool inSearchIndex = false;
 
-#ifndef NO_INDICES
-  #pragma db index member(path)
-  #pragma db index member(parent)
-#endif
-
+#pragma db index member(path)
+#pragma db index member(parent)
 };
 
 #pragma db view object(File)

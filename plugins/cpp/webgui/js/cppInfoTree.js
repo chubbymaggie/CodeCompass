@@ -1,4 +1,4 @@
-define([
+require([
   'codecompass/model',
   'codecompass/viewHandler',
   'codecompass/util'],
@@ -30,6 +30,10 @@ function (model, viewHandler, util) {
     return label;
   }
 
+  function createReferenceCountLabel(label, count) {
+    return label + '<span class="reference-count">(' + count + ')</span>';
+  }
+
   function createLabel(astNodeInfo) {
     var labelClass = '';
 
@@ -37,13 +41,23 @@ function (model, viewHandler, util) {
       labelClass = 'label-implicit';
 
     var labelValue = astNodeInfo.astNodeValue;
-    if (astNodeInfo.symbolType === 'Function')
-    {
-      var props = model.cppservice.getProperties(astNodeInfo.id);
-      // TODO: This "if" won't be necessary when the parser is fixed. Currently
-      // no signature is generated for implicit functions.
-      if (props['Signature'])
-        labelValue = props['Signature'];
+
+    // Create dom node for return type of a function and place it at the end of
+    // signature.
+    if (astNodeInfo.symbolType === 'Function') {
+      var init = labelValue.slice(0, labelValue.indexOf('('));
+      var returnTypeEnd = init.lastIndexOf(' ');
+
+      //--- Constructor, destructor doesn't have return type ---//
+
+      if (returnTypeEnd !== -1) {
+        var funcSignature = init.slice(returnTypeEnd);
+
+        labelValue = funcSignature
+          + ' : <span class="label-return-type">'
+          + init.slice(0, returnTypeEnd)
+          + "</span>";
+      }
     }
 
     var label = createTagLabels(astNodeInfo.tags)
@@ -65,6 +79,46 @@ function (model, viewHandler, util) {
            null;
   }
 
+  function groupReferencesByVisibilities(references, parentNode, nodeInfo) {
+    var res = [];
+    var visibilities = ['public', 'private', 'protected'];
+
+    visibilities.forEach(function (visibility) {
+      var nodes = references.filter(function (reference) {
+        return reference.tags.indexOf(visibility) > -1;
+      });
+
+      if (!nodes.length)
+        return;
+
+      res.push({
+        id          : nodeInfo.id + visibility + parentNode.refType,
+        name        : createReferenceCountLabel(visibility, nodes.length),
+        refType     : parentNode.refType,
+        hasChildren : true,
+        cssClass    : 'icon-visibility icon-' + visibility,
+        getChildren : function () {
+          var res = [];
+
+          nodes.forEach(function (reference) {
+            res.push({
+              id          : visibility + reference.id,
+              name        : createLabel(reference),
+              refType     : parentNode.refType,
+              nodeInfo    : reference,
+              hasChildren : false,
+              cssClass    : getCssClass(reference)
+            });
+          });
+
+          return res;
+        }
+      });
+    });
+
+    return res;
+  }
+
   function loadReferenceNodes(parentNode, nodeInfo, refTypes) {
     var res = [];
     var fileGroupsId = [];
@@ -72,6 +126,10 @@ function (model, viewHandler, util) {
     var references = model.cppservice.getReferences(
       nodeInfo.id,
       parentNode.refType);
+
+    if (parentNode.refType === refTypes['Method'] ||
+        parentNode.refType === refTypes['Data member'])
+      return groupReferencesByVisibilities(references, parentNode, nodeInfo);
 
     references.forEach(function (reference) {
       if (parentNode.refType === refTypes['Caller'] ||
@@ -92,7 +150,8 @@ function (model, viewHandler, util) {
         var fileInfo = model.project.getFileInfo(fileId);
         res.push({
           id          : fileGroupsId[fileId],
-          name        : fileInfo.name + ' (' + referenceInFile.length + ')',
+          name        : createReferenceCountLabel(
+                          fileInfo.name, referenceInFile.length),
           refType     : parentNode.refType,
           hasChildren : true,
           cssClass    : util.getIconClass(fileInfo.path),
@@ -114,15 +173,20 @@ function (model, viewHandler, util) {
 
                     //--- Recursive Node ---//
 
-                    res.push({
-                      id          : 'Caller-' + reference.id,
-                      name        : parentNode.name,
-                      nodeInfo    : reference,
-                      refType     : parentNode.refType,
-                      cssClass    : parentNode.cssClass,
-                      hasChildren : true,
-                      getChildren : parentNode.getChildren
-                    });
+                    var refCount = model.cppservice.getReferenceCount(
+                      reference.id, parentNode.refType);
+
+                    if (refCount)
+                      res.push({
+                        id          : 'Caller-' + reference.id,
+                        name        : createReferenceCountLabel(
+                                        parentNode.name, refCount),
+                        nodeInfo    : reference,
+                        refType     : parentNode.refType,
+                        cssClass    : parentNode.cssClass,
+                        hasChildren : true,
+                        getChildren : parentNode.getChildren
+                      });
 
                     //--- Call ---//
 
@@ -237,6 +301,7 @@ function (model, viewHandler, util) {
         //--- Properties ---//
 
         var props = model.cppservice.getProperties(elementInfo.id);
+
         for (var propName in props) {
           var propId = propName.replace(/ /g, '-');
           var label
@@ -256,16 +321,20 @@ function (model, viewHandler, util) {
 
         var refTypes = model.cppservice.getReferenceTypes(elementInfo.id);
         for (var refType in refTypes) {
-          ret.push({
-            name        : refType,
-            parent      : 'root',
-            refType     : refTypes[refType],
-            cssClass    : 'icon-' + refType.replace(/ /g, '-'),
-            hasChildren : true,
-            getChildren : function () {
-              return loadReferenceNodes(this, elementInfo, refTypes);
-            }
-          });
+          var refCount =
+            model.cppservice.getReferenceCount(elementInfo.id, refTypes[refType]);
+
+          if (refCount)
+            ret.push({
+              name        : createReferenceCountLabel(refType, refCount),
+              parent      : 'root',
+              refType     : refTypes[refType],
+              cssClass    : 'icon-' + refType.replace(/ /g, '-'),
+              hasChildren : true,
+              getChildren : function () {
+                return loadReferenceNodes(this, elementInfo, refTypes);
+              }
+            });
         };
 
       } else if (elementInfo instanceof FileInfo) {
@@ -274,17 +343,21 @@ function (model, viewHandler, util) {
 
         var refTypes = model.cppservice.getFileReferenceTypes(elementInfo.id);
         for (var refType in refTypes) {
-          ret.push({
-            name        : refType,
-            parent      : 'root',
-            nodeInfo    : elementInfo,
-            refType     : refTypes[refType],
-            cssClass    : 'icon-' + refType.replace(/ /g, '-'),
-            hasChildren : true,
-            getChildren : function () {
-              return loadFileReferenceNodes(this);
-            }
-          });
+          var refCount = model.cppservice.getFileReferenceCount(
+            elementInfo.id, refTypes[refType]);
+
+          if (refCount)
+            ret.push({
+              name        : createReferenceCountLabel(refType, refCount),
+              parent      : 'root',
+              nodeInfo    : elementInfo,
+              refType     : refTypes[refType],
+              cssClass    : 'icon-' + refType.replace(/ /g, '-'),
+              hasChildren : true,
+              getChildren : function () {
+                return loadFileReferenceNodes(this);
+              }
+            });
         };
 
       }

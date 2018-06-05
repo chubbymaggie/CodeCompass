@@ -47,6 +47,9 @@ private:
     const std::string& multiCommentEnd_) const;
 
   void persistLoc(const Loc& loc_, model::FileId file_);
+
+  std::unordered_set<model::FileId> _fileIdCache;
+  std::unique_ptr<util::JobQueueThreadPool<std::string>> _pool;
 };
 
 } // namespace parser

@@ -1,3 +1,5 @@
+find_package(Clang REQUIRED CONFIG)
+
 llvm_map_components_to_libnames(llvm_libs support core irreader)
 
 include_directories(
@@ -5,33 +7,35 @@ include_directories(
   ${CMAKE_SOURCE_DIR}/parser/include
   ${CMAKE_SOURCE_DIR}/util/include
   ${CMAKE_SOURCE_DIR}/model/include
-  ${PLUGIN_DIR}/model/include
-  ${LLVM_INCLUDE_DIRS})
+  ${PLUGIN_DIR}/model/include)
+
+include_directories(SYSTEM
+  ${LLVM_INCLUDE_DIRS}
+  ${CLANG_INCLUDE_DIRS})
+
+link_directories(${LLVM_LIBRARY_DIRS})
 
 add_definitions(${LLVM_DEFINITIONS})
 
 add_library(cppparser SHARED
   src/cppparser.cpp
-  src/symbolhelper.cpp)
+  src/symbolhelper.cpp
+  src/manglednamecache.cpp
+  src/ppincludecallback.cpp
+  src/ppmacrocallback.cpp
+  src/relationcollector.cpp
+  src/doccommentformatter.cpp)
 
 target_link_libraries(cppparser
   cppmodel
   model
   clangTooling
-  clangFrontendTool
   clangFrontend
   clangDriver
   clangSerialization
-  clangCodeGen
   clangParse
   clangSema
-  clangStaticAnalyzerFrontend
-  clangStaticAnalyzerCheckers
-  clangStaticAnalyzerCore
   clangAnalysis
-  clangARCMigrate
-  clangRewrite
-  clangRewriteFrontend
   clangEdit
   clangAST
   clangLex

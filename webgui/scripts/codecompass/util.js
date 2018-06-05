@@ -2,11 +2,13 @@ define([
   'dijit/Dialog',
   'dojo/_base/array',
   'dojo/_base/lang',
+  'dojo/date/locale',
   'dojo/dom-style',
   'dojo/data/ItemFileWriteStore',
   'dojox/grid/DataGrid',
   'codecompass/model'],
-function (Dialog, array, lang, style, ItemFileWriteStore, DataGrid, model) {
+function (Dialog, array, lang, locale, style, ItemFileWriteStore, DataGrid,
+  model) {
   return {
     /**
      * This function returns the file name of a path string i.e. the part after
@@ -70,17 +72,75 @@ function (Dialog, array, lang, style, ItemFileWriteStore, DataGrid, model) {
     },
 
     /**
+     * This function creates a hexadecimal color from a string.
+     */
+    strToColor : function (str) {
+      var hash = 0;
+      for (var i = 0; i < str.length; i++)
+         hash = str.charCodeAt(i) + ((hash << 5) - hash);
+
+      var c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+
+      return '#' + '00000'.substring(0, 6 - c.length) + c;
+    },
+
+    /**
+     * Creates a human friendly relative time ago on the date.
+     */
+    timeAgo : function (date) {
+      var delta = Math.round((+new Date - date) / 1000);
+
+      var minute = 60,
+          hour   = minute * 60,
+          day    = hour * 24,
+          week   = day * 7,
+          month  = day * 30
+          year   = day * 365;
+
+      var fuzzy;
+
+      if (delta < 30) {
+        fuzzy = 'just then';
+      } else if (delta < minute) {
+        fuzzy = delta + ' seconds ago';
+      } else if (delta < 2 * minute) {
+        fuzzy = 'a minute ago'
+      } else if (delta < hour) {
+        fuzzy = Math.floor(delta / minute) + ' minutes ago';
+      } else if (Math.floor(delta / hour) == 1) {
+        fuzzy = '1 hour ago'
+      } else if (delta < day) {
+        fuzzy = Math.floor(delta / hour) + ' hours ago';
+      } else if (delta < day * 2) {
+        fuzzy = 'yesterday';
+      } else if (delta < week) {
+        fuzzy = Math.floor(delta / day) + ' days ago';
+      } else if (delta < 2 * week) {
+        fuzzy = '1 week ago';
+      } else if (delta < month) {
+        fuzzy = Math.floor(delta / week) + ' weeks ago';
+      } else {
+        fuzzy = 'on ' + locale.format(date, {
+          datePattern: 'yyyy. MM. dd', selector: 'date'});
+      }
+
+      return fuzzy;
+    },
+
+    /**
      * This function returns the full height of a DOM element which means the
      * sum of its height, top and bottom margin, padding and border.
      */
     getFullHeight : function (element) {
-      var height = parseFloat(style.get(element, 'height'));
-      var paddingTop = parseFloat(style.get(element, 'paddingTop'));
-      var paddingBottom = parseFloat(style.get(element, 'paddingBottom'));
-      var borderTop = parseFloat(style.get(element, 'borderTop'));
-      var borderBottom = parseFloat(style.get(element, 'borderBottom'));
-      var marginTop = parseFloat(style.get(element, 'marginTop'));
-      var marginBottom = parseFloat(style.get(element, 'marginBottom'));
+      var computedStyle = style.getComputedStyle(element);
+
+      var height = parseInt(computedStyle.height);
+      var paddingTop = parseInt(computedStyle.paddingTop);
+      var paddingBottom = parseInt(computedStyle.paddingBottom);
+      var borderTop = parseInt(computedStyle.borderTopWidth);
+      var borderBottom = parseInt(computedStyle.borderBottomWidth);
+      var marginTop = parseInt(computedStyle.marginTop);
+      var marginBottom = parseInt(computedStyle.marginBottom);
 
       return height + paddingTop + paddingBottom + borderTop + borderBottom +
         marginTop + marginBottom;

@@ -2,12 +2,13 @@
 #define CC_PARSER_CXXPARSER_H
 
 #include <map>
-#include <vector>
 #include <unordered_set>
-#include <mutex>
+#include <vector>
 
 #include <clang/Tooling/JSONCompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
+
+#include <model/buildaction.h>
 
 #include <parser/abstractparser.h>
 #include <parser/parsercontext.h>
@@ -39,14 +40,41 @@ private:
   std::map<std::string, std::string> extractInputOutputs(
     const clang::tooling::CompileCommand& command_) const;
 
-  void addCompileCommand(const clang::tooling::CompileCommand& command_);
+  model::BuildActionPtr addBuildAction(
+    const clang::tooling::CompileCommand& command_);
+
+  void addCompileCommand(
+    const clang::tooling::CompileCommand& command_,
+    model::BuildActionPtr buildAction_,
+    bool error_ = false);
+
   bool isParsed(const clang::tooling::CompileCommand& command_);
   bool isSourceFile(const std::string& file_) const;
+  bool isNonSourceFlag(const std::string& arg_) const;
   bool parseByJson(const std::string& jsonFile_, std::size_t threadNum_);
-  void worker();
+  int worker(const clang::tooling::CompileCommand& command_);
 
-  std::vector<clang::tooling::CompileCommand> _compileCommands;
-  std::size_t _index;
+  /**
+   * A single build command's cc::util::JobQueueThreadPool job.
+   */
+  struct ParseJob
+  {
+    /**
+     * The build command itself. This is given to CppParser::worker.
+     */
+    std::reference_wrapper<const clang::tooling::CompileCommand> command;
+
+    /**
+     * The # of the build command in the compilation command database.
+     */
+    std::size_t index;
+
+    ParseJob(const clang::tooling::CompileCommand& command, std::size_t index)
+      : command(command), index(index)
+    {}
+
+    ParseJob(const ParseJob&) = default;
+  };
 
   std::unordered_set<std::uint64_t> _parsedCommandHashes;
 };

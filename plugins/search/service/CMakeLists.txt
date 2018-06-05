@@ -6,7 +6,9 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/model/include
   ${PROJECT_SOURCE_DIR}/service/language/gen-cpp
   ${PROJECT_SOURCE_DIR}/service/project/gen-cpp
-  ${PLUGIN_DIR}/model/include
+  ${PLUGIN_DIR}/model/include)
+
+include_directories(SYSTEM
   ${THRIFT_LIBTHRIFT_INCLUDE_DIRS})
 
 # Generate thrift files
@@ -19,13 +21,14 @@ add_custom_command(
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-java
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-js
   COMMAND
-    thrift --gen cpp --gen js --gen java -o ${CMAKE_CURRENT_SOURCE_DIR}
-    -I ${PROJECT_SOURCE_DIR}/service
-    ${CMAKE_CURRENT_SOURCE_DIR}/search.thrift
+    thrift --gen cpp --gen js --gen java
+      -o ${CMAKE_CURRENT_SOURCE_DIR}
+      -I ${PROJECT_SOURCE_DIR}/service
+      ${CMAKE_CURRENT_SOURCE_DIR}/search.thrift
   DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/search.thrift
   COMMENT
-    "Generate thrift for search.thrift")
+    "Generating Thrift for search.thrift")
 
 # Create cpp static library from thrift files
 add_library(searchthrift STATIC

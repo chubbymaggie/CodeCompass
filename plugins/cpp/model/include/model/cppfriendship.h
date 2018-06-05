@@ -25,13 +25,18 @@ struct CppFriendship
       .append("\ntheFriend = ").append(std::to_string(theFriend));
   }
 
-#ifndef NO_INDICES
-  #pragma db index member(target)
-  #pragma db index member(theFriend)
-#endif
+#pragma db index member(target)
+#pragma db index member(theFriend)
 };
 
 typedef std::shared_ptr<CppFriendship> CppFriendshipPtr;
+
+#pragma db view object(CppFriendship)
+struct CppFriendshipCount
+{
+  #pragma db column("count(" + CppFriendship::id + ")")
+  std::size_t count;
+};
 
 }
 }

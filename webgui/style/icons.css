@@ -194,7 +194,8 @@
 }
 
 .icon-Type::before,
-.icon-Types::before{
+.icon-Types::before,
+.icon-Return-type::before{
   content : '\e040'
 }
 
@@ -284,6 +285,22 @@
 
 .icon-Enum-constants::before{
   content: '\e059';
+}
+
+.icon-Macros::before {
+  content: '\e060';
+}
+
+.icon-Includes::before {
+  content: '\e061';
+}
+
+.icon-Expansions::before {
+  content: '\e062';
+}
+
+.icon-Undefinitions::before {
+  content: '\e063';
 }
 
 .icon-x{

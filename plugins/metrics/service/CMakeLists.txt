@@ -5,7 +5,9 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/service/project/include
   ${PLUGIN_DIR}/model/include
   ${PROJECT_SOURCE_DIR}/util/include
-  ${PROJECT_SOURCE_DIR}/webserver/include
+  ${PROJECT_SOURCE_DIR}/webserver/include)
+
+include_directories(SYSTEM
   ${THRIFT_LIBTHRIFT_INCLUDE_DIRS})
 
 add_custom_command(
@@ -16,6 +18,7 @@ add_custom_command(
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp/metrics_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp/MetricsService.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/gen-cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/gen-js
   COMMAND
     thrift --gen cpp --gen js 
       -o ${CMAKE_CURRENT_SOURCE_DIR}
@@ -24,7 +27,7 @@ add_custom_command(
   DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/metrics.thrift
   COMMENT
-    "Generate thrift for metrics.thrift")
+    "Generating Thrift for metrics.thrift")
 
 add_library(metricsthrift STATIC
   gen-cpp/metrics_constants.cpp

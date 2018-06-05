@@ -48,6 +48,10 @@ public:
     AstNodeInfo& return_,
     const core::FilePosition& fpos_) override;
 
+  void getSourceText(
+    std::string& return_,
+    const core::AstNodeId& astNodeId_) override;
+
   void getDocumentation(
     std::string& return_,
     const core::AstNodeId& astNodeId_) override;
@@ -92,6 +96,10 @@ public:
     const std::int32_t referenceId_,
     const std::vector<std::string>& tags_) override;
 
+  std::int32_t getReferenceCount(
+    const core::AstNodeId& astNodeId_,
+    const std::int32_t referenceId_) override;
+
   void getReferencesInFile(
     std::vector<AstNodeInfo>& return_,
     const core::AstNodeId& astNodeId_,
@@ -112,6 +120,10 @@ public:
 
   void getFileReferences(
     std::vector<AstNodeInfo>& return_,
+    const core::FileId& fileId_,
+    const std::int32_t referenceId_) override;
+
+  std::int32_t getFileReferenceCount(
     const core::FileId& fileId_,
     const std::int32_t referenceId_) override;
 
@@ -159,6 +171,8 @@ private:
 
     LOCAL_VAR, /*!< This option returns the local variables of a function. */
 
+    RETURN_TYPE, /*!< This option returns the return type of a function. */
+
     OVERRIDE, /*!< This option returns the functions which the given function
       overrides. */
 
@@ -185,6 +199,10 @@ private:
     UNDERLYING_TYPE, /*!< Underlying type of a typedef. */
 
     ENUM_CONSTANTS, /*!< Enum constants. */
+
+    EXPANSION, /*!< Macro expansion. */
+
+    UNDEFINITION, /*!< Macro undefinition. */
   };
 
   enum FileReferenceType
@@ -194,7 +212,9 @@ private:
 
     TYPES, /*!< User defined data types such as classes, structs etc. */
 
-    FUNCTIONS /*!< Functions in the current source file. */
+    FUNCTIONS, /*!< Functions in the current source file. */
+
+    MACROS, /*!< Macros in the current source file. */
   };
 
   enum DiagramType
@@ -213,8 +233,31 @@ private:
       in the nodes, but the type of the member variables are indicated as
       aggregation relationship. */
 
-    CLASS_COLLABORATION /*!< This returns a class collaboration diagram
-      which shows the individual class members and their inheritance hierarchy. */
+    CLASS_COLLABORATION, /*!< This returns a class collaboration diagram
+      which shows the individual class members and their inheritance
+      hierarchy. */
+
+    COMPONENT_USERS, /*!< Component users diagram for source file S shows which
+      source files depend on S through the interfaces S provides. */
+
+    EXTERNAL_DEPENDENCY, /*!< This diagram shows the module which directory
+      depends on. The "depends on" diagram on module A traverses the
+      subdirectories of module A and shows all directories that contain files
+      that any of the source files in A includes. */
+
+    EXTERNAL_USERS, /*!< This diagram shows directories (modules) that are
+      users of the queried module. */
+
+    INCLUDE_DEPENDENCY, /*!< This diagram shows of the `#include` file
+      dependencies. */
+
+    INTERFACE, /*!< Interface diagram shows the used and provided interfaces of
+      a source code file and shows linking information. */
+
+    SUBSYSTEM_DEPENDENCY, /*!< This diagram shows the directories relationship
+      between the subdirectories of the queried module. This diagram is useful
+      to understand the relationships of the subdirectories (submodules)
+      of a module. */
   };
 
   static bool compareByPosition(
@@ -244,14 +287,23 @@ private:
     const odb::query<model::CppAstNode>& query_
       = odb::query<model::CppAstNode>(true));
 
-    /**
-     * This function returns the model::CppAstNode objects which meet the
-     * requirements of the given query in the given file.
-     */
-    std::vector<model::CppAstNode> queryCppAstNodesInFile(
-      const core::FileId& fileId_,
-      const odb::query<model::CppAstNode>& query_
-        = odb::query<model::CppAstNode>(true));
+  /**
+   * This function returns the model::CppAstNode objects which meet the
+   * requirements of the given query in the given file.
+   */
+  std::vector<model::CppAstNode> queryCppAstNodesInFile(
+    const core::FileId& fileId_,
+    const odb::query<model::CppAstNode>& query_
+      = odb::query<model::CppAstNode>(true));
+
+  /**
+   * This function returns the count of model::CppAstNode objects which meet the
+   * requirements of the given query in the given file.
+   */
+  std::uint32_t queryCppAstNodeCountInFile(
+    const core::FileId& fileId_,
+    const odb::query<model::CppAstNode>& query_
+      = odb::query<model::CppAstNode>(true));
 
   /**
    * This function returns the model::CppAstNode objects which have the same
@@ -262,6 +314,13 @@ private:
    */
   std::vector<model::CppAstNode> queryDefinitions(
     const core::AstNodeId& astNodeId_);
+
+  /**
+   * This function returns an AST query to get the function calls in the given
+   * function.
+   */
+  odb::query<model::CppAstNode> astCallsQuery(
+    const model::CppAstNode& astNode_);
 
   /**
    * This function returns the function calls in a given function.
@@ -295,6 +354,31 @@ private:
    */
   std::map<model::CppAstNodeId, std::vector<std::string>> getTags(
     const std::vector<model::CppAstNode>& nodes_);
+
+  /*
+   * This function returns the number of corresponding model::CppAstNode objects
+   * to the given AST which meet the given query condition.
+   */
+  std::size_t queryCppAstNodeCount(
+    const core::AstNodeId& astNodeId_,
+    const odb::query<model::CppAstNode>& query_
+      = odb::query<model::CppAstNode>(true));
+
+  /**
+   * This function returns the number of function calls in a given function.
+   * @param astNodeId_ An AST node ID which belongs to a function.
+   */
+  std::size_t queryCallsCount(
+    const core::AstNodeId& astNodeId_);
+
+  /**
+   * This function returns the number of functions which override the given one.
+   * @param reverse_ If this parameter is true then the function returns the
+   * functions number which are overriden by the given one.
+   */
+  std::size_t queryOverridesCount(
+    const core::AstNodeId& astNodeId_,
+    bool reverse_ = false);
 
   std::shared_ptr<odb::database> _db;
   util::OdbTransaction _transaction;

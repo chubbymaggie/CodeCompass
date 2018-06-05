@@ -32,7 +32,7 @@ SourceManager::SourceManager(std::shared_ptr<odb::database> db_)
 
   //--- Initialize magic for plain text testing ---//
 
-  if (_magicCookie = ::magic_open(MAGIC_SYMLINK))
+  if ((_magicCookie = ::magic_open(MAGIC_SYMLINK)))
   {
     if (::magic_load(_magicCookie, 0) != 0)
     {
@@ -45,7 +45,7 @@ SourceManager::SourceManager(std::shared_ptr<odb::database> db_)
     }
   }
   else
-    LOG(error) << "Failed to create a libmagic cookie!";
+    LOG(warning) << "Failed to create a libmagic cookie!";
 }
 
 SourceManager::~SourceManager()
@@ -54,12 +54,6 @@ SourceManager::~SourceManager()
 
   if (_magicCookie)
     ::magic_close(_magicCookie);
-}
-
-model::FilePtr SourceManager::getFile(const std::string& path_)
-{
-  std::lock_guard<std::mutex> guard(_createFileMutex);
-  return getCreateFile(path_);
 }
 
 model::FileContentPtr SourceManager::createFileContent(
@@ -103,10 +97,17 @@ model::FilePtr SourceManager::getCreateFileEntry(
 {
   //--- Return from cache if it contains ---//
 
+  _createFileMutex.lock();
   std::map<std::string, model::FilePtr>::const_iterator it = _files.find(path_);
 
   if (it != _files.end())
-    return it->second;
+  {
+    model::FilePtr file = it->second;
+    _createFileMutex.unlock();
+    return file;
+  }
+
+  _createFileMutex.unlock();
 
   //--- Create new file entry ---//
 
@@ -148,7 +149,7 @@ model::FilePtr SourceManager::getCreateFileEntry(
   return file;
 }
 
-model::FilePtr SourceManager::getCreateFile(const std::string& path_)
+model::FilePtr SourceManager::getFile(const std::string& path_)
 {
   //--- Create canonical form of the path ---//
 
@@ -167,8 +168,15 @@ model::FilePtr SourceManager::getCreateFile(const std::string& path_)
 
   //--- Create file entry ---//
 
-  std::string canonical = canonicalPath.native();
-  return _files[canonical] = getCreateFileEntry(canonical, fileExists);
+  std::string canonical = ec ? path_ : canonicalPath.native();
+
+  model::FilePtr file = getCreateFileEntry(canonical, fileExists);
+
+  _createFileMutex.lock();
+  _files[canonical] = file;
+  _createFileMutex.unlock();
+
+  return file;
 }
 
 model::FilePtr SourceManager::getCreateParent(const std::string& path_)
@@ -179,16 +187,19 @@ model::FilePtr SourceManager::getCreateParent(const std::string& path_)
   if (parentPath.native().empty())
     return nullptr;
 
-  return getCreateFile(parentPath.native());
+  return getFile(parentPath.native());
 }
 
 bool SourceManager::isPlainText(const std::string& path_) const
 {
+  static std::mutex _magicFileMutex;
+  std::lock_guard<std::mutex> guard(_magicFileMutex);
+
   const char* magic = ::magic_file(_magicCookie, path_.c_str());
 
   if (!magic)
   {
-    LOG(error) << "Couldn't use magic on file: " << path_;
+    LOG(warning) << "Couldn't use magic on file: " << path_;
     return false;
   }
 
@@ -200,9 +211,11 @@ bool SourceManager::isPlainText(const std::string& path_) const
 
 void SourceManager::updateFile(const model::File& file_)
 {
-  std::lock_guard<std::mutex> guard(_createFileMutex);
+  _createFileMutex.lock();
+  bool find = _persistedFiles.find(file_.id) != _persistedFiles.end();
+  _createFileMutex.unlock();
 
-  if (_persistedFiles.find(file_.id) != _persistedFiles.end())
+  if (find)
     _transaction([&, this]() {
       _db->update(file_);
     });
@@ -240,7 +253,7 @@ void SourceManager::persistFiles()
         // unloading is that some parsers may want to read the file contents and
         // if this can be done through the File object then the file is not
         // needed to be read from disk.
-//        p.second->content.unload();
+        p.second->content.unload();
       }
       catch (const odb::object_already_persistent&)
       {

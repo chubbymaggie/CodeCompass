@@ -1,7 +1,6 @@
 #include <algorithm>
-#include <unordered_map>
 #include <memory>
-#include <thread>
+#include <unordered_map>
 
 #include <boost/algorithm/string/join.hpp>
 #include <boost/filesystem.hpp>
@@ -17,13 +16,18 @@
 #include <model/file-odb.hxx>
 
 #include <util/hash.h>
-#include <util/odbtransaction.h>
 #include <util/logutil.h>
+#include <util/odbtransaction.h>
+#include <util/threadpool.h>
 
 #include <cppparser/cppparser.h>
 
-#include "assignmentcollector.h"
 #include "clangastvisitor.h"
+#include "relationcollector.h"
+#include "manglednamecache.h"
+#include "ppincludecallback.h"
+#include "ppmacrocallback.h"
+#include "doccommentcollector.h"
 
 namespace cc
 {
@@ -35,7 +39,15 @@ class VisitorActionFactory : public clang::tooling::FrontendActionFactory
 public:
   static void cleanUp()
   {
-    MyConsumer::_mangledNameCache.clear();
+    MyFrontendAction::_mangledNameCache.clear();
+  }
+
+  static void init(ParserContext& ctx_)
+  {
+    (util::OdbTransaction(ctx_.db))([&] {
+      for (const model::CppAstNode& node : ctx_.db->query<model::CppAstNode>())
+        MyFrontendAction::_mangledNameCache.insert(node);
+    });
   }
 
   VisitorActionFactory(ParserContext& ctx_) : _ctx(ctx_)
@@ -50,11 +62,12 @@ public:
 private:
   class MyConsumer : public clang::ASTConsumer
   {
-    friend class VisitorActionFactory;
-
   public:
-    MyConsumer(ParserContext& ctx_, clang::ASTContext& context_)
-      : _ctx(ctx_), _context(context_)
+    MyConsumer(
+      ParserContext& ctx_,
+      clang::ASTContext& context_,
+      MangledNameCache& mangledNameCache_)
+        : _mangledNameCache(mangledNameCache_), _ctx(ctx_), _context(context_)
     {
     }
 
@@ -67,17 +80,24 @@ private:
       }
 
       {
-        AssignmentCollector assignmentCollector(
+        RelationCollector relationCollector(
           _ctx, _context, _mangledNameCache, _clangToAstNodeId);
-        assignmentCollector.TraverseDecl(context_.getTranslationUnitDecl());
+        relationCollector.TraverseDecl(context_.getTranslationUnitDecl());
       }
+
+      if (!_ctx.options.count("skip-doccomment"))
+      {
+        DocCommentCollector docCommentCollector(
+          _ctx, _context, _mangledNameCache, _clangToAstNodeId);
+        docCommentCollector.TraverseDecl(context_.getTranslationUnitDecl());
+      }
+      else
+        LOG(info) << "C++ documentation parser has been skipped.";
     }
 
   private:
-    static std::unordered_map<model::CppAstNodeId, std::uint64_t>
-      _mangledNameCache;
-    std::unordered_map<const void*, model::CppAstNodeId>
-      _clangToAstNodeId;
+    MangledNameCache& _mangledNameCache;
+    std::unordered_map<const void*, model::CppAstNodeId> _clangToAstNodeId;
 
     ParserContext& _ctx;
     clang::ASTContext& _context;
@@ -85,27 +105,44 @@ private:
 
   class MyFrontendAction : public clang::ASTFrontendAction
   {
+    friend class VisitorActionFactory;
+
   public:
     MyFrontendAction(ParserContext& ctx_) : _ctx(ctx_)
     {
+    }
+
+    virtual bool BeginSourceFileAction(
+      clang::CompilerInstance& compiler_) override
+    {
+      compiler_.createASTContext();
+      auto& pp = compiler_.getPreprocessor();
+
+      pp.addPPCallbacks(std::make_unique<PPIncludeCallback>(
+        _ctx, compiler_.getASTContext(), _mangledNameCache, pp));
+      pp.addPPCallbacks(std::make_unique<PPMacroCallback>(
+        _ctx, compiler_.getASTContext(), _mangledNameCache, pp));
+
+      return true;
     }
 
     virtual std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
       clang::CompilerInstance& compiler_, llvm::StringRef) override
     {
       return std::unique_ptr<clang::ASTConsumer>(
-        new MyConsumer(_ctx, compiler_.getASTContext()));
+        new MyConsumer(_ctx, compiler_.getASTContext(), _mangledNameCache));
     }
 
   private:
+    static MangledNameCache _mangledNameCache;
+
     ParserContext& _ctx;
   };
 
   ParserContext& _ctx;
 };
 
-std::unordered_map<model::CppAstNodeId, std::uint64_t>
-VisitorActionFactory::MyConsumer::_mangledNameCache;
+MangledNameCache VisitorActionFactory::MyFrontendAction::_mangledNameCache;
 
 bool CppParser::isSourceFile(const std::string& file_) const
 {
@@ -116,6 +153,11 @@ bool CppParser::isSourceFile(const std::string& file_) const
   std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
   return std::find(cppExts.begin(), cppExts.end(), ext) != cppExts.end();
+}
+
+bool CppParser::isNonSourceFlag(const std::string& arg_) const
+{
+  return arg_.find("-Wl,") == 0;
 }
 
 std::map<std::string, std::string> CppParser::extractInputOutputs(
@@ -138,11 +180,18 @@ std::map<std::string, std::string> CppParser::extractInputOutputs(
   {
     if (state == OParam)
     {
-      output = arg;
+      boost::filesystem::path absolutePath =
+        boost::filesystem::absolute(arg, command_.Directory);
+
+      output = absolutePath.native();
       state = None;
     }
-    else if (isSourceFile(arg))
-      sources.insert(arg);
+    else if (isSourceFile(arg) && !isNonSourceFlag(arg))
+    {
+      boost::filesystem::path absolutePath =
+        boost::filesystem::absolute(arg, command_.Directory);
+      sources.insert(absolutePath.native());
+    }
     else if (arg == "-c")
       hasCParam = true;
     else if (arg == "-o")
@@ -169,12 +218,10 @@ std::map<std::string, std::string> CppParser::extractInputOutputs(
   return inToOut;
 }
 
-void CppParser::addCompileCommand(
+model::BuildActionPtr CppParser::addBuildAction(
   const clang::tooling::CompileCommand& command_)
 {
   util::OdbTransaction transaction(_ctx.db);
-
-  //--- BuildAction ---//
 
   model::BuildActionPtr buildAction(new model::BuildAction);
 
@@ -188,25 +235,39 @@ void CppParser::addCompileCommand(
 
   transaction([&, this]{ _ctx.db->persist(buildAction); });
 
-  //--- BuildSource, BuildTarget ---//
+  return buildAction;
+}
+
+void CppParser::addCompileCommand(
+  const clang::tooling::CompileCommand& command_,
+  model::BuildActionPtr buildAction_,
+  bool error_)
+{
+  util::OdbTransaction transaction(_ctx.db);
 
   std::vector<model::BuildSource> sources;
   std::vector<model::BuildTarget> targets;
 
   for (const auto& srcTarget : extractInputOutputs(command_))
   {
-    if (!boost::filesystem::exists(srcTarget.first) ||
-        !boost::filesystem::exists(srcTarget.second))
-      continue;
-
     model::BuildSource buildSource;
     buildSource.file = _ctx.srcMgr.getFile(srcTarget.first);
-    buildSource.action = buildAction;
+    buildSource.file->parseStatus = error_
+      ? model::File::PSPartiallyParsed
+      : model::File::PSFullyParsed;
+    _ctx.srcMgr.updateFile(*buildSource.file);
+    buildSource.action = buildAction_;
     sources.push_back(std::move(buildSource));
 
     model::BuildTarget buildTarget;
     buildTarget.file = _ctx.srcMgr.getFile(srcTarget.second);
-    buildTarget.action = buildAction;
+    buildTarget.action = buildAction_;
+    if (buildTarget.file->type != model::File::BINARY_TYPE)
+    {
+      buildTarget.file->type = model::File::BINARY_TYPE;
+      _ctx.srcMgr.updateFile(*buildTarget.file);
+    }
+
     targets.push_back(std::move(buildTarget));
   }
 
@@ -220,77 +281,50 @@ void CppParser::addCompileCommand(
   });
 }
 
-void CppParser::worker()
+int CppParser::worker(const clang::tooling::CompileCommand& command_)
 {
-  static std::mutex mutex;
+  //--- Assemble compiler command line ---//
 
-  while (true)
+  std::vector<const char*> commandLine;
+  commandLine.reserve(command_.CommandLine.size());
+  commandLine.push_back("--");
+  std::transform(
+    command_.CommandLine.begin() + 1, // Skip compiler name
+    command_.CommandLine.end(),
+    std::back_inserter(commandLine),
+    [](const std::string& s){ return s.c_str(); });
+
+  int argc = commandLine.size();
+
+  std::string compilationDbLoadError;
+  std::unique_ptr<clang::tooling::FixedCompilationDatabase> compilationDb(
+    clang::tooling::FixedCompilationDatabase::loadFromCommandLine(
+      argc,
+      commandLine.data(),
+      compilationDbLoadError));
+
+  if (!compilationDb)
   {
-    //--- Select nect compilation command ---//
-
-    mutex.lock();
-
-    if (_index == _compileCommands.size())
-    {
-      mutex.unlock();
-      break;
-    }
-
-    const clang::tooling::CompileCommand& command = _compileCommands[_index];
-    std::size_t index = ++_index;
-
-    //--- Add compile command hash ---//
-
-    auto hash = util::fnvHash(
-      boost::algorithm::join(command.CommandLine, ""));
-
-    if (_parsedCommandHashes.find(hash) != _parsedCommandHashes.end())
-    {
-      LOG(info)
-        << '(' << index << '/' << _compileCommands.size() << ')'
-        << " Already parsed " << command.Filename;
-      mutex.unlock();
-      continue;
-    }
-
-    _parsedCommandHashes.insert(hash);
-
-    mutex.unlock();
-
-    //--- Assemble compiler command line ---//
-
-    std::vector<const char*> commandLine;
-    commandLine.reserve(command.CommandLine.size());
-    commandLine.push_back("--");
-    std::transform(
-      command.CommandLine.begin() + 1, // Skip compiler name
-      command.CommandLine.end(),
-      std::back_inserter(commandLine),
-      [](const std::string& s){ return s.c_str(); });
-
-    int argc = commandLine.size();
-
-    std::unique_ptr<clang::tooling::FixedCompilationDatabase> compilationDb(
-      clang::tooling::FixedCompilationDatabase::loadFromCommandLine(
-        argc,
-        commandLine.data()));
-
-    //--- Start the tool ---//
-
-    VisitorActionFactory factory(_ctx);
-
-    LOG(info)
-      << '(' << index << '/' << _compileCommands.size() << ')'
-      << " Parsing " << command.Filename;
-
-    clang::tooling::ClangTool tool(*compilationDb, command.Filename);
-
-    tool.run(&factory);
-
-    //--- Save build command ---//
-
-    addCompileCommand(command);
+    LOG(error) << "Failed to create compilation database from command-line. " << compilationDbLoadError;
+    return 1;
   }
+
+  //--- Save build action ---//
+
+  model::BuildActionPtr buildAction = addBuildAction(command_);
+
+  //--- Start the tool ---//
+
+  VisitorActionFactory factory(_ctx);
+  clang::tooling::ClangTool tool(*compilationDb, command_.Filename);
+
+  int error = tool.run(&factory);
+
+  //--- Save build command ---//
+
+  addCompileCommand(command_, buildAction, error);
+
+  return error;
 }
 
 CppParser::CppParser(ParserContext& ctx_) : AbstractParser(ctx_)
@@ -308,6 +342,8 @@ std::vector<std::string> CppParser::getDependentParsers() const
 
 bool CppParser::parse()
 {
+  VisitorActionFactory::init(_ctx);
+
   bool success = true;
 
   for (const std::string& input
@@ -330,7 +366,8 @@ bool CppParser::parseByJson(
 
   std::unique_ptr<clang::tooling::JSONCompilationDatabase> compDb
     = clang::tooling::JSONCompilationDatabase::loadFromFile(
-        jsonFile_, errorMsg);
+        jsonFile_, errorMsg,
+        clang::tooling::JSONCommandLineSyntax::Gnu);
 
   if (!errorMsg.empty())
   {
@@ -338,17 +375,62 @@ bool CppParser::parseByJson(
     return false;
   }
 
-  _compileCommands = compDb->getAllCompileCommands();
-  _index = 0;
+  //--- Read the compilation commands compile database ---//
 
-  std::vector<std::thread> workers;
-  workers.reserve(threadNum_);
+  std::vector<clang::tooling::CompileCommand> compileCommands =
+    compDb->getAllCompileCommands();
+  std::size_t numCompileCommands = compileCommands.size();
 
-  for (std::size_t i = 0; i < threadNum_; ++i)
-    workers.emplace_back(&cc::parser::CppParser::worker, this);
+  //--- Create a thread pool for the current commands ---//
+  std::unique_ptr<
+    util::JobQueueThreadPool<ParseJob>> pool =
+    util::make_thread_pool<ParseJob>(
+      threadNum_, [this, &numCompileCommands](ParseJob& job_)
+      {
+        const clang::tooling::CompileCommand& command = job_.command;
 
-  for (std::thread& worker : workers)
-    worker.join();
+        LOG(info)
+          << '(' << job_.index << '/' << numCompileCommands << ')'
+          << " Parsing " << command.Filename;
+
+        int error = this->worker(command);
+
+        if (error)
+          LOG(warning)
+            << '(' << job_.index << '/' << numCompileCommands << ')'
+            << " Parsing " << command.Filename << " has been failed.";
+      });
+
+  //--- Push all commands into the thread pool's queue ---//
+  std::size_t index = 0;
+
+  for (const auto& command : compileCommands)
+  {
+    ParseJob job(command, ++index);
+
+    auto hash = util::fnvHash(
+      boost::algorithm::join(command.CommandLine, " "));
+
+    if (_parsedCommandHashes.find(hash) != _parsedCommandHashes.end())
+    {
+      LOG(info)
+        << '(' << index << '/' << numCompileCommands << ')'
+        << " Already parsed " << command.Filename;
+
+      continue;
+    }
+
+    //--- Add compile command hash ---//
+
+    _parsedCommandHashes.insert(hash);
+
+    //--- Push the job ---//
+
+    pool->enqueue(job);
+  }
+
+  // Block execution until every job is finished.
+  pool->wait();
 
   return true;
 }
@@ -357,11 +439,17 @@ CppParser::~CppParser()
 {
 }
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreturn-type-c-linkage"
 extern "C"
 {
   boost::program_options::options_description getOptions()
   {
     boost::program_options::options_description description("C++ Plugin");
+    description.add_options()
+      ("skip-doccomment",
+       "If this flag is given the parser will skip parsing the documentation "
+       "comments.");
     return description;
   }
 
@@ -370,6 +458,7 @@ extern "C"
     return std::make_shared<CppParser>(ctx_);
   }
 }
+#pragma clang diagnostic pop
 
 } // parser
 } // cc

@@ -8,13 +8,14 @@ define([
   'dijit/layout/ContentPane',
   'dijit/Dialog',
   'dijit/MenuItem',
+  'codecompass/astHelper',
   'codecompass/util',
   'codecompass/model',
   'codecompass/urlHandler',
   'codecompass/viewHandler',
   'codecompass/view/component/ContextMenu'],
 function (declare, domClass, dom, style, query, topic, ContentPane, Dialog,
-  MenuItem, util, model, urlHandler, viewHandler, ContextMenu) {
+  MenuItem, astHelper, util, model, urlHandler, viewHandler, ContextMenu) {
 
   var BuildDialog = declare(Dialog, {
 
@@ -167,35 +168,20 @@ function (declare, domClass, dom, style, query, topic, ContentPane, Dialog,
    */
   function buildContextMenu(position, fileInfo, contextMenu) {
 
-    //--- File position ---//
-
-    var fpos = new FilePosition();
-    var  pos = new Position();
-
-    pos.line = position[0];
-    pos.column = position[1];
-    fpos.file = fileInfo.id;
-    fpos.pos = pos;
-
-    //--- Get AST node info ---//
-
-    var service = model.getLanguageService(fileInfo.type);
-    if (service)
-      var astNodeInfo = service.getAstNodeInfoByPosition(fpos);
+    var astNodeInfo = astHelper.getAstNodeInfoByPosition(position, fileInfo);
 
     //--- Build menu ---//
 
     contextMenu.clear();
 
-    if (astNodeInfo)
-      viewHandler.getModules({
-        type : viewHandler.moduleType.TextContextMenu,
-        fileType : fileInfo.type
-      }).forEach(function (menuItem) {
-        var item = menuItem.render(astNodeInfo, fileInfo);
-        if (item)
-          contextMenu.addChild(item);
-      });
+    viewHandler.getModules({
+      type : viewHandler.moduleType.TextContextMenu,
+      fileType : fileInfo.type
+    }).forEach(function (menuItem) {
+      var item = menuItem.render(astNodeInfo, fileInfo);
+      if (item)
+        contextMenu.addChild(item);
+    });
 
     contextMenu.addChild(new MenuItem({
       label : 'Get permalink to selection',
@@ -240,13 +226,15 @@ function (declare, domClass, dom, style, query, topic, ContentPane, Dialog,
       //--- Header ---//
 
       this._header = {
-        header   : dom.create('div',  { class : 'header'   }),
-        filename : dom.create('span', { class : 'filename' }),
-        path     : dom.create('span', { class : 'path'     }),
-        colons   : dom.toDom('<span class="colons">::</span>')
+        header      : dom.create('div',  { class : 'header'      }),
+        parsestatus : dom.create('span', { class : 'parsestatus' }),
+        filename    : dom.create('span', { class : 'filename'    }),
+        path        : dom.create('span', { class : 'path'        }),
+        colons      : dom.toDom('<span class="colons">::</span>')
       };
 
       dom.place(this._header.header, this.domNode);
+      dom.place(this._header.parsestatus, this._header.header);
       dom.place(this._header.filename, this._header.header);
       dom.place(this._header.colons, this._header.header);
       dom.place(this._header.path, this._header.header);
@@ -415,10 +403,62 @@ function (declare, domClass, dom, style, query, topic, ContentPane, Dialog,
         this.set('selection', [pos[0], token.start, pos[0], token.end]);
       }
 
+      //--- Highlighting the same occurrence of the selected entity ---//
+
+      this._markUsages(pos, this._fileInfo);
+
       //--- Right click ---//
 
       if (event.button === 2)
         buildContextMenu(pos, this._fileInfo, this._contextMenu);
+
+      //--- Ctrl-click ---//
+
+      if (event.button === 0 && event.ctrlKey) {
+        var astNodeInfo
+          = astHelper.getAstNodeInfoByPosition(pos, this._fileInfo);
+        var service = model.getLanguageService(this._fileInfo.type);
+        astHelper.jumpToDef(astNodeInfo.id, service);
+      }
+    },
+
+    /**
+     * This function marks the usages of an AST node.
+     */
+    _markUsages : function (position, fileInfo) {
+      var that = this;
+
+      var astNodeInfo = astHelper.getAstNodeInfoByPosition(position, fileInfo);
+
+      var refTypes = model.cppservice.getReferenceTypes(astNodeInfo.id);
+      var usages = model.cppservice.getReferences(
+        astNodeInfo.id,
+        refTypes['Usage']);
+
+      this.clearAllMarks();
+
+      var fl = that._codeMirror.options.firstLineNumber;
+      usages.forEach(function (astNodeInfo) {
+        // TODO: getReferencesInFile() should be called when it will be
+        // implemented and then this check won't be necessary.
+        if (astNodeInfo.range.file !== fileInfo.id)
+          return;
+
+        var range = astNodeInfo.range.range;
+
+        if (range.endpos.line !== range.startpos.line) {
+          range.endpos.line = range.startpos.line;
+
+          var line = that._codeMirror.getLine(range.startpos.line - fl);
+
+          if (line)
+            range.endpos.column = line.length + 1;
+        }
+
+        that.markText(range.startpos, range.endpos, {
+          className : 'cb-marked-select'
+        });
+      }, this);
     },
 
     /**
@@ -505,11 +545,13 @@ function (declare, domClass, dom, style, query, topic, ContentPane, Dialog,
       var that = this;
       this.selection = range;
 
+      this.clearAllMarks();
+
       setTimeout(function () {
         var fl = that._codeMirror.options.firstLineNumber;
         that._codeMirror.doc.setSelection(
           { line : range[2] - fl, ch : range[3] - 1 },
-          { line : range[0] - fl, ch : range[1] - 1 })
+          { line : range[0] - fl, ch : range[1] - 1 });
       }, 0);
     },
 
@@ -517,9 +559,48 @@ function (declare, domClass, dom, style, query, topic, ContentPane, Dialog,
       this._codeMirror.doc.setValue(content);
     },
 
+    _setHeaderPathAttr : function (path) {
+      path = path.split('/').slice(1);
+      var pathElements = dom.create('span');
+      var string = '';
+
+      path.forEach(function (file) {
+        string += '/' + file;
+        var s = string; // This is needed because of closure affairs.
+
+        dom.place(dom.toDom('/'), pathElements);
+        dom.place(dom.create('span', {
+          innerHTML : file,
+          class     : 'pathelement',
+          onclick   : function () { topic.publish('codecompass/openPath', s); }
+        }), pathElements);
+      });
+
+      dom.place(pathElements, this._header.path, 'only');
+    },
+
     _setHeaderAttr : function (fileInfo) {
+      var statusClasses = ['fullyparsed', 'partiallyparsed', 'notparsed'];
+      domClass.remove(this._header.parsestatus, statusClasses);
+
+      switch (fileInfo.parseStatus) {
+        case FileParseStatus.FullyParsed:
+          domClass.add(this._header.parsestatus, statusClasses[0]);
+          dom.place(dom.toDom('(Fully parsed)'), this._header.parsestatus, 'only');
+          break;
+
+        case FileParseStatus.PartiallyParsed:
+          domClass.add(this._header.parsestatus, statusClasses[1]);
+          dom.place(dom.toDom('(Partially parsed)'), this._header.parsestatus, 'only');
+          break;
+
+        default:
+          domClass.add(this._header.parsestatus, statusClasses[2]);
+          dom.place(dom.toDom('(Not parsed)'), this._header.parsestatus, 'only');
+      }
+
       dom.place(dom.toDom(fileInfo.name), this._header.filename, 'only');
-      dom.place(dom.toDom(fileInfo.path), this._header.path, 'only');
+      this.set('headerPath', fileInfo.path);
     }
   });
 });
